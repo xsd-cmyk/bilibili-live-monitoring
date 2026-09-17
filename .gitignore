@@ -1,0 +1,47 @@
+# Android / Gradle
+*.iml
+.gradle/
+.kotlin/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# IDE
+.idea/
+*.hprof
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 临时产物（本项目排障时用的工作目录）
+.tmp/
+
+# 说明：dist/ 里放的是对外发布的安装包（主播监控-1.1-debug.apk），**故意入库**，
+# 因此这里不写 *.apk 通配忽略。若不想把二进制放进仓库，改为取消下面这行的注释：
+# dist/*.apk
+
+# 编译依赖包（便携 JDK + Android SDK + Gradle 发行包 + 已下载依赖，共约 1.1 GB）
+# 由 tools\制作依赖包.ps1 生成，让"下载整个文件夹的人不用装 Android Studio 也能编译"。
+# ★ 它**不能**进仓库：JDK 的 lib\modules 单个文件就 122 MB，超过 GitHub 的 100 MB/文件硬上限，
+#   git push 会被直接拒绝。分发方式：把整个文件夹（或只把 build-env）压成 zip 发网盘，
+#   或作为 GitHub Release 的附件（单个附件上限 2 GB）。
+build-env/
+
+# 对外发布的安装包走 GitHub Release 附件，不进仓库（原注释如此声明，规则此前缺失）
+dist/
+
+# 本机专用配置（build-and-install.ps1 读取，含本机路径）
+.local.ps1
+
+# 图标管理脚本（本地工具，按用户要求不进仓库）
+管理图标.cmd
+
+# 图标管理脚本本体
+tools/管理图标.ps1

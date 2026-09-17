@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+      监控是本应用的核心用户可见功能，需要长期在后台轮询 B 站直播状态，
+      不属于 dataSync（一次性数据同步）语义。Android 15+ 对 dataSync 前台服务有
+      「24 小时窗口内累计 6 小时」的硬上限，到点系统会强制停止，与"实时监控"需求冲突
+      （doc_v2.4.md 0.5 亦明确指出不得把 dataSync 当作永久轮询方案）。
+      specialUse 无该时长上限，需要声明子类型说明用途。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".BiliMonitorApp"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".background.MonitoringService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="persistent_live_status_monitoring" />
+        </service>
+
+        <!--
+          通知点击的跳板（用户要求"点击通知进直播间，优先哔哩哔哩客户端"）：
+          透明、无历史、不进最近任务，onCreate 里决定跳客户端还是浏览器后立刻 finish。
+          必须 exported=false —— 它只接受我们自己 PendingIntent 的调用。
+        -->
+        <activity
+            android:name=".notify.LiveRoomRedirectActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="standard"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <receiver
+            android:name=".background.BootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          更新后的「桌面入口自救援」（逻辑见 background/LauncherEntryRescueReceiver）。
+
+          为什么必须有这么一条通道：图标/名称预设靠清单里的 activity-alias 别名切换，
+          而**组件的启用状态跨 APK 更新持久化**。别名一旦改名（旧的单轴 IconPresetN 换成双轴
+          IconPreset_i_j），旧别名的「已启用」状态随组件一起消失，主入口 MainActivity 的「已禁用」
+          状态却被保留 —— 更新后桌面上一个入口都不剩、应用再也打不开，只能卸载重装（丢数据）。
+          这条广播是自救的唯一入口。
+
+          ★ 本注释刻意**不写**尖括号形式的 activity-alias 元素名：tools/generate-icon-presets.ps1
+          会用裸文本在「标记区块之外」搜索该元素名来清理旧别名残留，注释里出现它会被误当成一个
+          待删除的别名，从而吃掉后面的内容（脚本自己不报错，因为改完仍是合法 XML）。
+
+          android:exported="false" 是**刻意**的，而且不影响接收这条由系统发出的广播：
+          MY_PACKAGE_REPLACED 由 system_server（uid 1000）发送，而 AOSP 的
+          ActivityManager.checkComponentPermission 对 root / system uid 在检查 exported
+          之前就无条件放行（源码注释即 "Root, system server get to do everything"）；
+          官方 <receiver> 文档亦写明 exported=false 时「仍能收到系统发出的消息」。
+          保持 false = 最小暴露面：其它应用连这个组件都够不着。
+          接收器内部另有一层防御：只有**确实一个启用的桌面入口都没有**时才动手，绝不信任广播本身。
+        -->
+        <receiver
+            android:name=".background.LauncherEntryRescueReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".background.KeepAliveAccessibilityService"
+            android:exported="false"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+        <!-- BEGIN GENERATED ICON ALIASES：由 tools/generate-icon-presets.ps1 生成，请勿手改 -->
+
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_0_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_0_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_0_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_1_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_1" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_1_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_1" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_1_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_1" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_1_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_1" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_2_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_2" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_2_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_2" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_2_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_2" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_2_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_2" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_3_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_3" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_3_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_3" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_3_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_3" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_3_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_3" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_4_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_4" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_4_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_4" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_4_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_4" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_4_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_4" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_5_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_5" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_5_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_5" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_5_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_5" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_5_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_5" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_6_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_6" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_6_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_6" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_6_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_6" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_6_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_6" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_7_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_7" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_7_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_7" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_7_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_7" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_7_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_7" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_8_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_8" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_8_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_8" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_8_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_8" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_8_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_8" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_9_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_9" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_9_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_9" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_9_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_9" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_9_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_9" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_10_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_10" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_10_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_10" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_10_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_10" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_10_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_10" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_11_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_11" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_11_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_11" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_11_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_11" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_11_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_11" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_12_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_12" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_12_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_12" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_12_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_12" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_12_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_12" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_13_0" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_13" android:label="@string/app_name"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_13_1" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_13" android:label="主播监控"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_13_2" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_13" android:label="直播通知器"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+            <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_13_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_13" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
+
+        <!-- END GENERATED ICON ALIASES -->
+    </application>
+</manifest>

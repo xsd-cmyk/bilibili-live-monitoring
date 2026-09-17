@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Kaoru</string>
+    <string name="accessibility_service_label">主播监控保活服务</string>
+    <string name="accessibility_service_description">仅用于提高应用后台存活率（实验性）。本服务不读取、不上传、不记录与主播监控无关的屏幕内容、输入事件或个人数据。</string>
+</resources>
