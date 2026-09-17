@@ -1,0 +1,30 @@
+keystore.properties
+*.jks
+*.keystore
+local.properties
+.gradle/
+build/
+*.iml
+.idea/
+.kotlin/
+
+
+# 本地调试产物（截图、UI dump、探测脚本）
+.tmp/
+
+# 「管理图标」生成的安装包副本（菜单 6 会写到 dist/，属于本地产物）
+dist/
+
+# ---- 便携工具链（约 2.3 GB：自带 JDK + Android SDK，供零安装构建用）----
+# 体积远超 GitHub 单文件/仓库建议上限，改用 Release 附件或本地生成（tools/制作依赖包.ps1）。
+build-env/
+publish/build-env/
+
+# ---- 图标管理脚本（本地工具，按用户要求不推送）----
+管理图标.cmd
+publish/管理图标.cmd
+tools/管理图标.ps1
+publish/tools/管理图标.ps1
+
+# ---- 开发过程中的临时补丁脚本（不属于项目源码）----
+.patch_*.py

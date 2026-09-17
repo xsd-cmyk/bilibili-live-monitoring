@@ -1,0 +1,105 @@
+<resources>
+    <!--
+      图标 / 名称 预设清单（本文件由 tools/generate-icon-presets.ps1 生成，请勿手改）。
+
+      为什么是两个数组 + 一个矩阵：<activity-alias> 的 android:icon 与 android:label 是同一个
+      组件上的两个属性，没法运行时只改其中一个；所以「图标 i × 名字 j」的每个组合各生成一个
+      别名 IconPreset_<i>_<j>，启用哪一个 = 同时选中了 (i, j)。
+
+      · icon_axis：每项「图标资源名|图标显示名」。第 0 项 = 应用自己的图标（资源名留空，
+        别名里写 @mipmap/ic_launcher）；第 i>=1 项 = ic_launcher_preset_<i>，按 icons/presets/ 文件名排序。
+      · name_axis：每项一个名字。第 0 项 = 空字符串，表示"应用自己的名字"（别名里写 @string/app_name）；
+        第 j>=1 项来自 icons/names.txt 的第 j 个有效行（去注释、去空白、去重）。
+      · preset_alias_matrix：每项「i|j|组件名」，只列真的生成了别名的格子 ——
+        格子 (0,0) 不生成别名（它就是主入口 MainActivity 本身），所以条数 = (N+1)*(M+1)-1。
+      · 组件名要换算成 <packageName>.IconPreset_<i>_<j> 再交给 ComponentName：
+        裸简名（"IconPreset_0_2"）不会被 ComponentName 按包名补全，会落在一个不存在的组件上。
+
+      ★ 将来发 release 的坑：release 开了 isShrinkResources，资源压缩器看不到 getIdentifier 这种
+        "按名字查找"，没有 R.xxx 直接引用的预设图标会被当成无用资源删掉，需要
+        app/src/main/res/raw/keep.xml + tools:keep 保住（详见 icons/presets/README.md，本阶段刻意不建）。
+        debug 构建不受影响。
+    -->
+
+    <string-array name="icon_axis">
+        <item>默认（应用自己的图标）</item>
+        <item>ic_launcher_preset_1|图标02</item>
+        <item>ic_launcher_preset_2|图标04</item>
+        <item>ic_launcher_preset_3|图标05</item>
+        <item>ic_launcher_preset_4|图标06</item>
+        <item>ic_launcher_preset_5|图标07</item>
+        <item>ic_launcher_preset_6|图标08</item>
+        <item>ic_launcher_preset_7|图标09</item>
+        <item>ic_launcher_preset_8|图标10</item>
+        <item>ic_launcher_preset_9|图标13</item>
+        <item>ic_launcher_preset_10|图标14</item>
+        <item>ic_launcher_preset_11|图标15</item>
+        <item>ic_launcher_preset_12|图标16</item>
+        <item>ic_launcher_preset_13|图标17</item>
+    </string-array>
+
+    <string-array name="name_axis">
+        <item></item>
+        <item>主播监控</item>
+        <item>直播通知器</item>
+        <item>豆豆知道了</item>
+    </string-array>
+
+    <string-array name="preset_alias_matrix">
+        <item>0|1|IconPreset_0_1</item>
+        <item>0|2|IconPreset_0_2</item>
+        <item>0|3|IconPreset_0_3</item>
+        <item>1|0|IconPreset_1_0</item>
+        <item>1|1|IconPreset_1_1</item>
+        <item>1|2|IconPreset_1_2</item>
+        <item>1|3|IconPreset_1_3</item>
+        <item>2|0|IconPreset_2_0</item>
+        <item>2|1|IconPreset_2_1</item>
+        <item>2|2|IconPreset_2_2</item>
+        <item>2|3|IconPreset_2_3</item>
+        <item>3|0|IconPreset_3_0</item>
+        <item>3|1|IconPreset_3_1</item>
+        <item>3|2|IconPreset_3_2</item>
+        <item>3|3|IconPreset_3_3</item>
+        <item>4|0|IconPreset_4_0</item>
+        <item>4|1|IconPreset_4_1</item>
+        <item>4|2|IconPreset_4_2</item>
+        <item>4|3|IconPreset_4_3</item>
+        <item>5|0|IconPreset_5_0</item>
+        <item>5|1|IconPreset_5_1</item>
+        <item>5|2|IconPreset_5_2</item>
+        <item>5|3|IconPreset_5_3</item>
+        <item>6|0|IconPreset_6_0</item>
+        <item>6|1|IconPreset_6_1</item>
+        <item>6|2|IconPreset_6_2</item>
+        <item>6|3|IconPreset_6_3</item>
+        <item>7|0|IconPreset_7_0</item>
+        <item>7|1|IconPreset_7_1</item>
+        <item>7|2|IconPreset_7_2</item>
+        <item>7|3|IconPreset_7_3</item>
+        <item>8|0|IconPreset_8_0</item>
+        <item>8|1|IconPreset_8_1</item>
+        <item>8|2|IconPreset_8_2</item>
+        <item>8|3|IconPreset_8_3</item>
+        <item>9|0|IconPreset_9_0</item>
+        <item>9|1|IconPreset_9_1</item>
+        <item>9|2|IconPreset_9_2</item>
+        <item>9|3|IconPreset_9_3</item>
+        <item>10|0|IconPreset_10_0</item>
+        <item>10|1|IconPreset_10_1</item>
+        <item>10|2|IconPreset_10_2</item>
+        <item>10|3|IconPreset_10_3</item>
+        <item>11|0|IconPreset_11_0</item>
+        <item>11|1|IconPreset_11_1</item>
+        <item>11|2|IconPreset_11_2</item>
+        <item>11|3|IconPreset_11_3</item>
+        <item>12|0|IconPreset_12_0</item>
+        <item>12|1|IconPreset_12_1</item>
+        <item>12|2|IconPreset_12_2</item>
+        <item>12|3|IconPreset_12_3</item>
+        <item>13|0|IconPreset_13_0</item>
+        <item>13|1|IconPreset_13_1</item>
+        <item>13|2|IconPreset_13_2</item>
+        <item>13|3|IconPreset_13_3</item>
+    </string-array>
+</resources>

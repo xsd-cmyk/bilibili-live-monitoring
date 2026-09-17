@@ -1,0 +1,4514 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 7,
+    "identityHash": "2daf7a28d6012aea89fde6d672b82bdc",
+    "entities": [
+      {
+        "tableName": "streamer",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `stableId` TEXT NOT NULL, `uid` INTEGER NOT NULL, `roomId` INTEGER, `shortRoomId` INTEGER, `name` TEXT NOT NULL, `nameLocked` INTEGER NOT NULL, `avatarUrl` TEXT, `roomTitle` TEXT, `parentAreaName` TEXT, `areaName` TEXT, `coverUrl` TEXT, `liveUrl` TEXT, `confirmedLiveStatus` TEXT NOT NULL, `lastObservationResult` TEXT NOT NULL, `observationSequence` INTEGER NOT NULL, `streamerMonitorGeneration` INTEGER NOT NULL, `monitoringEnabled` INTEGER NOT NULL, `isFavorite` INTEGER NOT NULL, `monitorPolicyStableId` TEXT, `lastCheckedAt` INTEGER, `lastConfirmedAt` INTEGER, `freshnessStatus` TEXT NOT NULL, `lastLiveStartedAt` INTEGER, `lastLiveEndedAt` INTEGER, `lastError` TEXT, `deletedAt` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stableId",
+            "columnName": "stableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uid",
+            "columnName": "uid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "roomId",
+            "columnName": "roomId",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "shortRoomId",
+            "columnName": "shortRoomId",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nameLocked",
+            "columnName": "nameLocked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "avatarUrl",
+            "columnName": "avatarUrl",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "roomTitle",
+            "columnName": "roomTitle",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "parentAreaName",
+            "columnName": "parentAreaName",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "areaName",
+            "columnName": "areaName",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "coverUrl",
+            "columnName": "coverUrl",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "liveUrl",
+            "columnName": "liveUrl",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "confirmedLiveStatus",
+            "columnName": "confirmedLiveStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastObservationResult",
+            "columnName": "lastObservationResult",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "observationSequence",
+            "columnName": "observationSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerMonitorGeneration",
+            "columnName": "streamerMonitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitoringEnabled",
+            "columnName": "monitoringEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isFavorite",
+            "columnName": "isFavorite",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorPolicyStableId",
+            "columnName": "monitorPolicyStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastCheckedAt",
+            "columnName": "lastCheckedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastConfirmedAt",
+            "columnName": "lastConfirmedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "freshnessStatus",
+            "columnName": "freshnessStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastLiveStartedAt",
+            "columnName": "lastLiveStartedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastLiveEndedAt",
+            "columnName": "lastLiveEndedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "deletedAt",
+            "columnName": "deletedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_streamer_stableId",
+            "unique": true,
+            "columnNames": [
+              "stableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_streamer_stableId` ON `${TABLE_NAME}` (`stableId`)"
+          },
+          {
+            "name": "index_streamer_uid",
+            "unique": true,
+            "columnNames": [
+              "uid"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_streamer_uid` ON `${TABLE_NAME}` (`uid`)"
+          },
+          {
+            "name": "index_streamer_roomId",
+            "unique": false,
+            "columnNames": [
+              "roomId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_roomId` ON `${TABLE_NAME}` (`roomId`)"
+          },
+          {
+            "name": "index_streamer_deletedAt",
+            "unique": false,
+            "columnNames": [
+              "deletedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_deletedAt` ON `${TABLE_NAME}` (`deletedAt`)"
+          },
+          {
+            "name": "index_streamer_confirmedLiveStatus",
+            "unique": false,
+            "columnNames": [
+              "confirmedLiveStatus"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_confirmedLiveStatus` ON `${TABLE_NAME}` (`confirmedLiveStatus`)"
+          },
+          {
+            "name": "index_streamer_isFavorite",
+            "unique": false,
+            "columnNames": [
+              "isFavorite"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_isFavorite` ON `${TABLE_NAME}` (`isFavorite`)"
+          },
+          {
+            "name": "index_streamer_monitorPolicyStableId",
+            "unique": false,
+            "columnNames": [
+              "monitorPolicyStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_monitorPolicyStableId` ON `${TABLE_NAME}` (`monitorPolicyStableId`)"
+          },
+          {
+            "name": "index_streamer_deletedAt_confirmedLiveStatus_isFavorite",
+            "unique": false,
+            "columnNames": [
+              "deletedAt",
+              "confirmedLiveStatus",
+              "isFavorite"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_deletedAt_confirmedLiveStatus_isFavorite` ON `${TABLE_NAME}` (`deletedAt`, `confirmedLiveStatus`, `isFavorite`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "tag",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `stableId` TEXT NOT NULL, `name` TEXT NOT NULL, `colorHex` TEXT, `sortOrder` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stableId",
+            "columnName": "stableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorHex",
+            "columnName": "colorHex",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sortOrder",
+            "columnName": "sortOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_tag_stableId",
+            "unique": true,
+            "columnNames": [
+              "stableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_tag_stableId` ON `${TABLE_NAME}` (`stableId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "group",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `stableId` TEXT NOT NULL, `name` TEXT NOT NULL, `sortOrder` INTEGER NOT NULL, `collapsed` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stableId",
+            "columnName": "stableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sortOrder",
+            "columnName": "sortOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collapsed",
+            "columnName": "collapsed",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_group_stableId",
+            "unique": true,
+            "columnNames": [
+              "stableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_group_stableId` ON `${TABLE_NAME}` (`stableId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "streamer_tag_cross_ref",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`streamerId` INTEGER NOT NULL, `tagId` INTEGER NOT NULL, PRIMARY KEY(`streamerId`, `tagId`), FOREIGN KEY(`streamerId`) REFERENCES `streamer`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tagId`) REFERENCES `tag`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tagId",
+            "columnName": "tagId",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "streamerId",
+            "tagId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_streamer_tag_cross_ref_tagId",
+            "unique": false,
+            "columnNames": [
+              "tagId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_tag_cross_ref_tagId` ON `${TABLE_NAME}` (`tagId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "streamer",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "streamerId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          },
+          {
+            "table": "tag",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "tagId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "streamer_group_cross_ref",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`streamerId` INTEGER NOT NULL, `groupId` INTEGER NOT NULL, PRIMARY KEY(`streamerId`, `groupId`), FOREIGN KEY(`streamerId`) REFERENCES `streamer`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`groupId`) REFERENCES `group`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "streamerId",
+            "groupId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_streamer_group_cross_ref_groupId",
+            "unique": false,
+            "columnNames": [
+              "groupId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_streamer_group_cross_ref_groupId` ON `${TABLE_NAME}` (`groupId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "streamer",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "streamerId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          },
+          {
+            "table": "group",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "groupId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "live_session",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `stableId` TEXT NOT NULL, `sessionKey` TEXT NOT NULL, `streamerId` INTEGER NOT NULL, `startTime` INTEGER, `endTime` INTEGER, `startSource` TEXT, `endSource` TEXT, `durationSource` TEXT, `startConfidence` TEXT, `endConfidence` TEXT, `durationConfidence` TEXT, `startLocked` INTEGER NOT NULL, `endLocked` INTEGER NOT NULL, `durationLocked` INTEGER NOT NULL, `titleAtStart` TEXT, `titleAtEnd` TEXT, `areaAtStart` TEXT, `areaAtEnd` TEXT, `coverUrlAtStart` TEXT, `coverUrlAtEnd` TEXT, `durationSeconds` INTEGER, `endReason` TEXT, `lifecycleState` TEXT NOT NULL, `currentReliableIntervalId` TEXT, `lastConfirmedLiveAt` INTEGER, `confirmedOfflineAt` INTEGER, `autoUpdateProtected` INTEGER NOT NULL, `correctionVersion` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `note` TEXT, `startTimeZone` TEXT, `endTimeZone` TEXT, FOREIGN KEY(`streamerId`) REFERENCES `streamer`(`id`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stableId",
+            "columnName": "stableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionKey",
+            "columnName": "sessionKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startTime",
+            "columnName": "startTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "endTime",
+            "columnName": "endTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startSource",
+            "columnName": "startSource",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "endSource",
+            "columnName": "endSource",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "durationSource",
+            "columnName": "durationSource",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startConfidence",
+            "columnName": "startConfidence",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "endConfidence",
+            "columnName": "endConfidence",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "durationConfidence",
+            "columnName": "durationConfidence",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startLocked",
+            "columnName": "startLocked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endLocked",
+            "columnName": "endLocked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationLocked",
+            "columnName": "durationLocked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "titleAtStart",
+            "columnName": "titleAtStart",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "titleAtEnd",
+            "columnName": "titleAtEnd",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "areaAtStart",
+            "columnName": "areaAtStart",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "areaAtEnd",
+            "columnName": "areaAtEnd",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "coverUrlAtStart",
+            "columnName": "coverUrlAtStart",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "coverUrlAtEnd",
+            "columnName": "coverUrlAtEnd",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "durationSeconds",
+            "columnName": "durationSeconds",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "endReason",
+            "columnName": "endReason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lifecycleState",
+            "columnName": "lifecycleState",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentReliableIntervalId",
+            "columnName": "currentReliableIntervalId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastConfirmedLiveAt",
+            "columnName": "lastConfirmedLiveAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "confirmedOfflineAt",
+            "columnName": "confirmedOfflineAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "autoUpdateProtected",
+            "columnName": "autoUpdateProtected",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "correctionVersion",
+            "columnName": "correctionVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startTimeZone",
+            "columnName": "startTimeZone",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "endTimeZone",
+            "columnName": "endTimeZone",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_live_session_streamerId",
+            "unique": false,
+            "columnNames": [
+              "streamerId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_session_streamerId` ON `${TABLE_NAME}` (`streamerId`)"
+          },
+          {
+            "name": "index_live_session_stableId",
+            "unique": true,
+            "columnNames": [
+              "stableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_live_session_stableId` ON `${TABLE_NAME}` (`stableId`)"
+          },
+          {
+            "name": "index_live_session_sessionKey",
+            "unique": true,
+            "columnNames": [
+              "sessionKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_live_session_sessionKey` ON `${TABLE_NAME}` (`sessionKey`)"
+          },
+          {
+            "name": "index_live_session_endTime",
+            "unique": false,
+            "columnNames": [
+              "endTime"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_session_endTime` ON `${TABLE_NAME}` (`endTime`)"
+          },
+          {
+            "name": "index_live_session_lifecycleState",
+            "unique": false,
+            "columnNames": [
+              "lifecycleState"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_session_lifecycleState` ON `${TABLE_NAME}` (`lifecycleState`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "streamer",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "streamerId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "live_event",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `streamerId` INTEGER NOT NULL, `streamerStableId` TEXT NOT NULL, `sessionStableId` TEXT, `eventType` TEXT NOT NULL, `eventConfirmedAt` INTEGER NOT NULL, `eventSequence` INTEGER NOT NULL, `observationSequence` INTEGER, `monitorGeneration` INTEGER, `streamerMonitorGeneration` INTEGER, `fencingToken` TEXT, `transitionId` TEXT, `configVersion` INTEGER, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`eventId`))",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerStableId",
+            "columnName": "streamerStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionStableId",
+            "columnName": "sessionStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "eventType",
+            "columnName": "eventType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventConfirmedAt",
+            "columnName": "eventConfirmedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventSequence",
+            "columnName": "eventSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "observationSequence",
+            "columnName": "observationSequence",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "monitorGeneration",
+            "columnName": "monitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "streamerMonitorGeneration",
+            "columnName": "streamerMonitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "fencingToken",
+            "columnName": "fencingToken",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "transitionId",
+            "columnName": "transitionId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "configVersion",
+            "columnName": "configVersion",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_live_event_streamerId",
+            "unique": false,
+            "columnNames": [
+              "streamerId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_streamerId` ON `${TABLE_NAME}` (`streamerId`)"
+          },
+          {
+            "name": "index_live_event_streamerStableId",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_streamerStableId` ON `${TABLE_NAME}` (`streamerStableId`)"
+          },
+          {
+            "name": "index_live_event_sessionStableId",
+            "unique": false,
+            "columnNames": [
+              "sessionStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_sessionStableId` ON `${TABLE_NAME}` (`sessionStableId`)"
+          },
+          {
+            "name": "index_live_event_eventConfirmedAt",
+            "unique": false,
+            "columnNames": [
+              "eventConfirmedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_eventConfirmedAt` ON `${TABLE_NAME}` (`eventConfirmedAt`)"
+          },
+          {
+            "name": "index_live_event_transitionId",
+            "unique": false,
+            "columnNames": [
+              "transitionId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_transitionId` ON `${TABLE_NAME}` (`transitionId`)"
+          },
+          {
+            "name": "index_live_event_streamerStableId_eventConfirmedAt",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId",
+              "eventConfirmedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_streamerStableId_eventConfirmedAt` ON `${TABLE_NAME}` (`streamerStableId`, `eventConfirmedAt`)"
+          },
+          {
+            "name": "index_live_event_sessionStableId_eventConfirmedAt",
+            "unique": false,
+            "columnNames": [
+              "sessionStableId",
+              "eventConfirmedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_sessionStableId_eventConfirmedAt` ON `${TABLE_NAME}` (`sessionStableId`, `eventConfirmedAt`)"
+          },
+          {
+            "name": "index_live_event_createdAt",
+            "unique": false,
+            "columnNames": [
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_event_createdAt` ON `${TABLE_NAME}` (`createdAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "status_history",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`historyId` TEXT NOT NULL, `streamerId` INTEGER NOT NULL, `streamerStableId` TEXT NOT NULL, `sessionStableId` TEXT, `oldStatus` TEXT NOT NULL, `newStatus` TEXT NOT NULL, `observationResult` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `observationSequence` INTEGER NOT NULL, `monitorGeneration` INTEGER NOT NULL, `streamerMonitorGeneration` INTEGER NOT NULL, `fencingToken` TEXT NOT NULL, `transitionId` TEXT, `configVersion` INTEGER, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`historyId`), FOREIGN KEY(`streamerId`) REFERENCES `streamer`(`id`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "historyId",
+            "columnName": "historyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerStableId",
+            "columnName": "streamerStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionStableId",
+            "columnName": "sessionStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "oldStatus",
+            "columnName": "oldStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "newStatus",
+            "columnName": "newStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "observationResult",
+            "columnName": "observationResult",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "observationSequence",
+            "columnName": "observationSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorGeneration",
+            "columnName": "monitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerMonitorGeneration",
+            "columnName": "streamerMonitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fencingToken",
+            "columnName": "fencingToken",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transitionId",
+            "columnName": "transitionId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "configVersion",
+            "columnName": "configVersion",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "historyId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_status_history_streamerId",
+            "unique": false,
+            "columnNames": [
+              "streamerId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_status_history_streamerId` ON `${TABLE_NAME}` (`streamerId`)"
+          },
+          {
+            "name": "index_status_history_streamerStableId",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_status_history_streamerStableId` ON `${TABLE_NAME}` (`streamerStableId`)"
+          },
+          {
+            "name": "index_status_history_observationSequence",
+            "unique": false,
+            "columnNames": [
+              "observationSequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_status_history_observationSequence` ON `${TABLE_NAME}` (`observationSequence`)"
+          },
+          {
+            "name": "index_status_history_streamerId_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "streamerId",
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_status_history_streamerId_occurredAt` ON `${TABLE_NAME}` (`streamerId`, `occurredAt`)"
+          },
+          {
+            "name": "index_status_history_streamerStableId_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId",
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_status_history_streamerStableId_occurredAt` ON `${TABLE_NAME}` (`streamerStableId`, `occurredAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "streamer",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "streamerId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "live_session_title",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sessionStableId` TEXT NOT NULL, `title` TEXT NOT NULL, `observedAt` INTEGER NOT NULL, PRIMARY KEY(`sessionStableId`, `title`), FOREIGN KEY(`sessionStableId`) REFERENCES `live_session`(`stableId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "sessionStableId",
+            "columnName": "sessionStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "observedAt",
+            "columnName": "observedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sessionStableId",
+            "title"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_live_session_title_sessionStableId",
+            "unique": false,
+            "columnNames": [
+              "sessionStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_session_title_sessionStableId` ON `${TABLE_NAME}` (`sessionStableId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "live_session",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sessionStableId"
+            ],
+            "referencedColumns": [
+              "stableId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "live_session_area",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sessionStableId` TEXT NOT NULL, `areaLabel` TEXT NOT NULL, `parentAreaName` TEXT, `areaName` TEXT, `observedAt` INTEGER NOT NULL, PRIMARY KEY(`sessionStableId`, `areaLabel`), FOREIGN KEY(`sessionStableId`) REFERENCES `live_session`(`stableId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "sessionStableId",
+            "columnName": "sessionStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "areaLabel",
+            "columnName": "areaLabel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentAreaName",
+            "columnName": "parentAreaName",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "areaName",
+            "columnName": "areaName",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "observedAt",
+            "columnName": "observedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sessionStableId",
+            "areaLabel"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_live_session_area_sessionStableId",
+            "unique": false,
+            "columnNames": [
+              "sessionStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_session_area_sessionStableId` ON `${TABLE_NAME}` (`sessionStableId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "live_session",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sessionStableId"
+            ],
+            "referencedColumns": [
+              "stableId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "streamer_pending_transition",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`streamerId` INTEGER NOT NULL, `monitorGeneration` INTEGER NOT NULL, `streamerMonitorGeneration` INTEGER NOT NULL, `pendingTransition` TEXT NOT NULL, `confirmationCount` INTEGER NOT NULL, `lastObservationSequence` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`streamerId`), FOREIGN KEY(`streamerId`) REFERENCES `streamer`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorGeneration",
+            "columnName": "monitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerMonitorGeneration",
+            "columnName": "streamerMonitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingTransition",
+            "columnName": "pendingTransition",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "confirmationCount",
+            "columnName": "confirmationCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastObservationSequence",
+            "columnName": "lastObservationSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "streamerId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": [
+          {
+            "table": "streamer",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "streamerId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "reliable_monitor_interval",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`intervalId` TEXT NOT NULL, `streamerStableId` TEXT NOT NULL, `sessionStableId` TEXT, `startedAt` INTEGER NOT NULL, `invalidatedAt` INTEGER, `invalidReason` TEXT, `lastReliableObservationSequence` INTEGER NOT NULL, `monitorGeneration` INTEGER NOT NULL, `streamerMonitorGeneration` INTEGER NOT NULL, `fencingToken` TEXT NOT NULL, `status` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`intervalId`))",
+        "fields": [
+          {
+            "fieldPath": "intervalId",
+            "columnName": "intervalId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerStableId",
+            "columnName": "streamerStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionStableId",
+            "columnName": "sessionStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "invalidatedAt",
+            "columnName": "invalidatedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "invalidReason",
+            "columnName": "invalidReason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastReliableObservationSequence",
+            "columnName": "lastReliableObservationSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorGeneration",
+            "columnName": "monitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerMonitorGeneration",
+            "columnName": "streamerMonitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fencingToken",
+            "columnName": "fencingToken",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "intervalId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_reliable_monitor_interval_streamerStableId",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reliable_monitor_interval_streamerStableId` ON `${TABLE_NAME}` (`streamerStableId`)"
+          },
+          {
+            "name": "index_reliable_monitor_interval_sessionStableId",
+            "unique": false,
+            "columnNames": [
+              "sessionStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reliable_monitor_interval_sessionStableId` ON `${TABLE_NAME}` (`sessionStableId`)"
+          },
+          {
+            "name": "index_reliable_monitor_interval_monitorGeneration",
+            "unique": false,
+            "columnNames": [
+              "monitorGeneration"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reliable_monitor_interval_monitorGeneration` ON `${TABLE_NAME}` (`monitorGeneration`)"
+          },
+          {
+            "name": "index_reliable_monitor_interval_streamerMonitorGeneration",
+            "unique": false,
+            "columnNames": [
+              "streamerMonitorGeneration"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reliable_monitor_interval_streamerMonitorGeneration` ON `${TABLE_NAME}` (`streamerMonitorGeneration`)"
+          },
+          {
+            "name": "index_reliable_monitor_interval_invalidatedAt",
+            "unique": false,
+            "columnNames": [
+              "invalidatedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reliable_monitor_interval_invalidatedAt` ON `${TABLE_NAME}` (`invalidatedAt`)"
+          },
+          {
+            "name": "index_reliable_monitor_interval_sessionStableId_startedAt",
+            "unique": false,
+            "columnNames": [
+              "sessionStableId",
+              "startedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reliable_monitor_interval_sessionStableId_startedAt` ON `${TABLE_NAME}` (`sessionStableId`, `startedAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "monitoring_gap",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`gapId` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, `endTime` INTEGER, `scope` TEXT NOT NULL, `reason` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`gapId`))",
+        "fields": [
+          {
+            "fieldPath": "gapId",
+            "columnName": "gapId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endTime",
+            "columnName": "endTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "scope",
+            "columnName": "scope",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "gapId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_monitoring_gap_scope",
+            "unique": false,
+            "columnNames": [
+              "scope"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_gap_scope` ON `${TABLE_NAME}` (`scope`)"
+          },
+          {
+            "name": "index_monitoring_gap_startedAt",
+            "unique": false,
+            "columnNames": [
+              "startedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_gap_startedAt` ON `${TABLE_NAME}` (`startedAt`)"
+          },
+          {
+            "name": "index_monitoring_gap_endTime",
+            "unique": false,
+            "columnNames": [
+              "endTime"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_gap_endTime` ON `${TABLE_NAME}` (`endTime`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "monitoring_gap_streamer",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`gapId` TEXT NOT NULL, `streamerStableId` TEXT NOT NULL, `affectedStartAt` INTEGER NOT NULL, `affectedEndAt` INTEGER, `reason` TEXT NOT NULL, `lastReliableAt` INTEGER, `recoveredAt` INTEGER, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`gapId`, `streamerStableId`), FOREIGN KEY(`gapId`) REFERENCES `monitoring_gap`(`gapId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "gapId",
+            "columnName": "gapId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerStableId",
+            "columnName": "streamerStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "affectedStartAt",
+            "columnName": "affectedStartAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "affectedEndAt",
+            "columnName": "affectedEndAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastReliableAt",
+            "columnName": "lastReliableAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "recoveredAt",
+            "columnName": "recoveredAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "gapId",
+            "streamerStableId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_monitoring_gap_streamer_gapId",
+            "unique": false,
+            "columnNames": [
+              "gapId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_gap_streamer_gapId` ON `${TABLE_NAME}` (`gapId`)"
+          },
+          {
+            "name": "index_monitoring_gap_streamer_streamerStableId",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_gap_streamer_streamerStableId` ON `${TABLE_NAME}` (`streamerStableId`)"
+          },
+          {
+            "name": "index_monitoring_gap_streamer_affectedEndAt",
+            "unique": false,
+            "columnNames": [
+              "affectedEndAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_gap_streamer_affectedEndAt` ON `${TABLE_NAME}` (`affectedEndAt`)"
+          },
+          {
+            "name": "index_monitoring_gap_streamer_streamerStableId_affectedStartAt",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId",
+              "affectedStartAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_gap_streamer_streamerStableId_affectedStartAt` ON `${TABLE_NAME}` (`streamerStableId`, `affectedStartAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "monitoring_gap",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "gapId"
+            ],
+            "referencedColumns": [
+              "gapId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "live_session_correction",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`correctionId` TEXT NOT NULL, `sessionStableId` TEXT NOT NULL, `baseCorrectionVersion` INTEGER NOT NULL, `newCorrectionVersion` INTEGER NOT NULL, `changedFieldsJson` TEXT NOT NULL, `source` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `operationId` TEXT NOT NULL, PRIMARY KEY(`correctionId`))",
+        "fields": [
+          {
+            "fieldPath": "correctionId",
+            "columnName": "correctionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionStableId",
+            "columnName": "sessionStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "baseCorrectionVersion",
+            "columnName": "baseCorrectionVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "newCorrectionVersion",
+            "columnName": "newCorrectionVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "changedFieldsJson",
+            "columnName": "changedFieldsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "correctionId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_live_session_correction_sessionStableId",
+            "unique": false,
+            "columnNames": [
+              "sessionStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_live_session_correction_sessionStableId` ON `${TABLE_NAME}` (`sessionStableId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "notification_aggregate",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`aggregateId` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `windowStartWall` INTEGER NOT NULL, `windowEndWall` INTEGER NOT NULL, `windowStartElapsed` INTEGER NOT NULL, `windowEndElapsed` INTEGER NOT NULL, `bootId` TEXT NOT NULL, `threshold` INTEGER NOT NULL, `eventCount` INTEGER NOT NULL, `status` TEXT NOT NULL, `sentAt` INTEGER, `expiresAt` INTEGER, `configVersion` INTEGER NOT NULL, PRIMARY KEY(`aggregateId`))",
+        "fields": [
+          {
+            "fieldPath": "aggregateId",
+            "columnName": "aggregateId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "windowStartWall",
+            "columnName": "windowStartWall",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "windowEndWall",
+            "columnName": "windowEndWall",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "windowStartElapsed",
+            "columnName": "windowStartElapsed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "windowEndElapsed",
+            "columnName": "windowEndElapsed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bootId",
+            "columnName": "bootId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "threshold",
+            "columnName": "threshold",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventCount",
+            "columnName": "eventCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sentAt",
+            "columnName": "sentAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expiresAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "configVersion",
+            "columnName": "configVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "aggregateId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_notification_aggregate_bootId",
+            "unique": false,
+            "columnNames": [
+              "bootId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_bootId` ON `${TABLE_NAME}` (`bootId`)"
+          },
+          {
+            "name": "index_notification_aggregate_status",
+            "unique": false,
+            "columnNames": [
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_status` ON `${TABLE_NAME}` (`status`)"
+          },
+          {
+            "name": "index_notification_aggregate_expiresAt",
+            "unique": false,
+            "columnNames": [
+              "expiresAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_expiresAt` ON `${TABLE_NAME}` (`expiresAt`)"
+          },
+          {
+            "name": "index_notification_aggregate_createdAt",
+            "unique": false,
+            "columnNames": [
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_createdAt` ON `${TABLE_NAME}` (`createdAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "notification_aggregate_event",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`bindingId` TEXT NOT NULL, `aggregateId` TEXT, `eventId` TEXT NOT NULL, `active` INTEGER NOT NULL, `bindingStatus` TEXT NOT NULL, `boundAt` INTEGER NOT NULL, `releasedAt` INTEGER, PRIMARY KEY(`bindingId`), FOREIGN KEY(`aggregateId`) REFERENCES `notification_aggregate`(`aggregateId`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`eventId`) REFERENCES `live_event`(`eventId`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "bindingId",
+            "columnName": "bindingId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregateId",
+            "columnName": "aggregateId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "active",
+            "columnName": "active",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bindingStatus",
+            "columnName": "bindingStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "boundAt",
+            "columnName": "boundAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "releasedAt",
+            "columnName": "releasedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "bindingId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_notification_aggregate_event_aggregateId",
+            "unique": false,
+            "columnNames": [
+              "aggregateId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_event_aggregateId` ON `${TABLE_NAME}` (`aggregateId`)"
+          },
+          {
+            "name": "index_notification_aggregate_event_eventId",
+            "unique": false,
+            "columnNames": [
+              "eventId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_event_eventId` ON `${TABLE_NAME}` (`eventId`)"
+          },
+          {
+            "name": "index_notification_aggregate_event_active",
+            "unique": false,
+            "columnNames": [
+              "active"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_event_active` ON `${TABLE_NAME}` (`active`)"
+          },
+          {
+            "name": "index_notification_aggregate_event_bindingStatus",
+            "unique": false,
+            "columnNames": [
+              "bindingStatus"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_event_bindingStatus` ON `${TABLE_NAME}` (`bindingStatus`)"
+          },
+          {
+            "name": "index_notification_aggregate_event_aggregateId_bindingStatus",
+            "unique": false,
+            "columnNames": [
+              "aggregateId",
+              "bindingStatus"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_event_aggregateId_bindingStatus` ON `${TABLE_NAME}` (`aggregateId`, `bindingStatus`)"
+          },
+          {
+            "name": "index_notification_aggregate_event_eventId_boundAt",
+            "unique": false,
+            "columnNames": [
+              "eventId",
+              "boundAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_aggregate_event_eventId_boundAt` ON `${TABLE_NAME}` (`eventId`, `boundAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "notification_aggregate",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "aggregateId"
+            ],
+            "referencedColumns": [
+              "aggregateId"
+            ]
+          },
+          {
+            "table": "live_event",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "eventId"
+            ],
+            "referencedColumns": [
+              "eventId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "notification_outbox",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`outboxId` TEXT NOT NULL, `eventKey` TEXT NOT NULL, `sourceEventId` TEXT, `streamerId` INTEGER, `aggregateId` TEXT, `problemKey` TEXT, `notificationId` INTEGER NOT NULL, `eventType` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, `status` TEXT NOT NULL, `nextAttemptAt` INTEGER, `attemptCount` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `expiresAt` INTEGER NOT NULL, `processingStartedAt` INTEGER, `leaseUntilWall` INTEGER, `leaseUntilElapsed` INTEGER, `leaseBootId` TEXT, `workerInstanceId` TEXT, `deliveryAttemptId` TEXT, `sentAt` INTEGER, `lastError` TEXT, `configVersion` INTEGER NOT NULL, PRIMARY KEY(`outboxId`), FOREIGN KEY(`sourceEventId`) REFERENCES `live_event`(`eventId`) ON UPDATE NO ACTION ON DELETE NO ACTION , FOREIGN KEY(`streamerId`) REFERENCES `streamer`(`id`) ON UPDATE NO ACTION ON DELETE NO ACTION , FOREIGN KEY(`aggregateId`) REFERENCES `notification_aggregate`(`aggregateId`) ON UPDATE NO ACTION ON DELETE NO ACTION , FOREIGN KEY(`problemKey`) REFERENCES `problem_state`(`problemKey`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "outboxId",
+            "columnName": "outboxId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventKey",
+            "columnName": "eventKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceEventId",
+            "columnName": "sourceEventId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "aggregateId",
+            "columnName": "aggregateId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "problemKey",
+            "columnName": "problemKey",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "notificationId",
+            "columnName": "notificationId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventType",
+            "columnName": "eventType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nextAttemptAt",
+            "columnName": "nextAttemptAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attemptCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expiresAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "processingStartedAt",
+            "columnName": "processingStartedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "leaseUntilWall",
+            "columnName": "leaseUntilWall",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "leaseUntilElapsed",
+            "columnName": "leaseUntilElapsed",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "leaseBootId",
+            "columnName": "leaseBootId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "workerInstanceId",
+            "columnName": "workerInstanceId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "deliveryAttemptId",
+            "columnName": "deliveryAttemptId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sentAt",
+            "columnName": "sentAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "configVersion",
+            "columnName": "configVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "outboxId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_notification_outbox_eventKey",
+            "unique": true,
+            "columnNames": [
+              "eventKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_notification_outbox_eventKey` ON `${TABLE_NAME}` (`eventKey`)"
+          },
+          {
+            "name": "index_notification_outbox_status",
+            "unique": false,
+            "columnNames": [
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_status` ON `${TABLE_NAME}` (`status`)"
+          },
+          {
+            "name": "index_notification_outbox_nextAttemptAt",
+            "unique": false,
+            "columnNames": [
+              "nextAttemptAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_nextAttemptAt` ON `${TABLE_NAME}` (`nextAttemptAt`)"
+          },
+          {
+            "name": "index_notification_outbox_expiresAt",
+            "unique": false,
+            "columnNames": [
+              "expiresAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_expiresAt` ON `${TABLE_NAME}` (`expiresAt`)"
+          },
+          {
+            "name": "index_notification_outbox_streamerId",
+            "unique": false,
+            "columnNames": [
+              "streamerId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_streamerId` ON `${TABLE_NAME}` (`streamerId`)"
+          },
+          {
+            "name": "index_notification_outbox_aggregateId",
+            "unique": false,
+            "columnNames": [
+              "aggregateId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_aggregateId` ON `${TABLE_NAME}` (`aggregateId`)"
+          },
+          {
+            "name": "index_notification_outbox_sourceEventId",
+            "unique": false,
+            "columnNames": [
+              "sourceEventId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_sourceEventId` ON `${TABLE_NAME}` (`sourceEventId`)"
+          },
+          {
+            "name": "index_notification_outbox_problemKey",
+            "unique": false,
+            "columnNames": [
+              "problemKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_problemKey` ON `${TABLE_NAME}` (`problemKey`)"
+          },
+          {
+            "name": "index_notification_outbox_status_nextAttemptAt",
+            "unique": false,
+            "columnNames": [
+              "status",
+              "nextAttemptAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_status_nextAttemptAt` ON `${TABLE_NAME}` (`status`, `nextAttemptAt`)"
+          },
+          {
+            "name": "index_notification_outbox_status_leaseUntilWall",
+            "unique": false,
+            "columnNames": [
+              "status",
+              "leaseUntilWall"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_status_leaseUntilWall` ON `${TABLE_NAME}` (`status`, `leaseUntilWall`)"
+          },
+          {
+            "name": "index_notification_outbox_streamerId_createdAt",
+            "unique": false,
+            "columnNames": [
+              "streamerId",
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_outbox_streamerId_createdAt` ON `${TABLE_NAME}` (`streamerId`, `createdAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "live_event",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sourceEventId"
+            ],
+            "referencedColumns": [
+              "eventId"
+            ]
+          },
+          {
+            "table": "streamer",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "streamerId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          },
+          {
+            "table": "notification_aggregate",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "aggregateId"
+            ],
+            "referencedColumns": [
+              "aggregateId"
+            ]
+          },
+          {
+            "table": "problem_state",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "problemKey"
+            ],
+            "referencedColumns": [
+              "problemKey"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "notification_delivery_attempt",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`attemptId` TEXT NOT NULL, `outboxId` TEXT NOT NULL, `eventKey` TEXT NOT NULL, `notificationId` INTEGER NOT NULL, `workerInstanceId` TEXT NOT NULL, `deliveryAttemptId` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, `finishedAt` INTEGER, `result` TEXT, `recoveredBy` TEXT, `error` TEXT, PRIMARY KEY(`attemptId`), FOREIGN KEY(`outboxId`) REFERENCES `notification_outbox`(`outboxId`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "attemptId",
+            "columnName": "attemptId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboxId",
+            "columnName": "outboxId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventKey",
+            "columnName": "eventKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notificationId",
+            "columnName": "notificationId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "workerInstanceId",
+            "columnName": "workerInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deliveryAttemptId",
+            "columnName": "deliveryAttemptId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finishedAt",
+            "columnName": "finishedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "result",
+            "columnName": "result",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "recoveredBy",
+            "columnName": "recoveredBy",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "error",
+            "columnName": "error",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "attemptId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_notification_delivery_attempt_outboxId",
+            "unique": false,
+            "columnNames": [
+              "outboxId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_delivery_attempt_outboxId` ON `${TABLE_NAME}` (`outboxId`)"
+          },
+          {
+            "name": "index_notification_delivery_attempt_eventKey",
+            "unique": false,
+            "columnNames": [
+              "eventKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_delivery_attempt_eventKey` ON `${TABLE_NAME}` (`eventKey`)"
+          },
+          {
+            "name": "index_notification_delivery_attempt_finishedAt",
+            "unique": false,
+            "columnNames": [
+              "finishedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_delivery_attempt_finishedAt` ON `${TABLE_NAME}` (`finishedAt`)"
+          },
+          {
+            "name": "index_notification_delivery_attempt_deliveryAttemptId",
+            "unique": true,
+            "columnNames": [
+              "deliveryAttemptId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_notification_delivery_attempt_deliveryAttemptId` ON `${TABLE_NAME}` (`deliveryAttemptId`)"
+          },
+          {
+            "name": "index_notification_delivery_attempt_eventKey_startedAt",
+            "unique": false,
+            "columnNames": [
+              "eventKey",
+              "startedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_delivery_attempt_eventKey_startedAt` ON `${TABLE_NAME}` (`eventKey`, `startedAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "notification_outbox",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "outboxId"
+            ],
+            "referencedColumns": [
+              "outboxId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "notification_id_registry",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventKey` TEXT NOT NULL, `notificationId` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`eventKey`))",
+        "fields": [
+          {
+            "fieldPath": "eventKey",
+            "columnName": "eventKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notificationId",
+            "columnName": "notificationId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventKey"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_notification_id_registry_notificationId",
+            "unique": true,
+            "columnNames": [
+              "notificationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_notification_id_registry_notificationId` ON `${TABLE_NAME}` (`notificationId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "notification_history",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`historyId` TEXT NOT NULL, `eventKey` TEXT NOT NULL, `outboxId` TEXT, `attemptId` TEXT, `notificationId` INTEGER, `streamerStableId` TEXT, `aggregateId` TEXT, `deliveryStatus` TEXT NOT NULL, `attemptCount` INTEGER NOT NULL, `deliveredAt` INTEGER, `reason` TEXT, `recordedAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `detail` TEXT, PRIMARY KEY(`historyId`), FOREIGN KEY(`outboxId`) REFERENCES `notification_outbox`(`outboxId`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "historyId",
+            "columnName": "historyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventKey",
+            "columnName": "eventKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboxId",
+            "columnName": "outboxId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "attemptId",
+            "columnName": "attemptId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "notificationId",
+            "columnName": "notificationId",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "streamerStableId",
+            "columnName": "streamerStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "aggregateId",
+            "columnName": "aggregateId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "deliveryStatus",
+            "columnName": "deliveryStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attemptCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deliveredAt",
+            "columnName": "deliveredAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "recordedAt",
+            "columnName": "recordedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detail",
+            "columnName": "detail",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "historyId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_notification_history_outboxId",
+            "unique": false,
+            "columnNames": [
+              "outboxId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_history_outboxId` ON `${TABLE_NAME}` (`outboxId`)"
+          },
+          {
+            "name": "index_notification_history_eventKey",
+            "unique": false,
+            "columnNames": [
+              "eventKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_history_eventKey` ON `${TABLE_NAME}` (`eventKey`)"
+          },
+          {
+            "name": "index_notification_history_streamerStableId",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_history_streamerStableId` ON `${TABLE_NAME}` (`streamerStableId`)"
+          },
+          {
+            "name": "index_notification_history_recordedAt",
+            "unique": false,
+            "columnNames": [
+              "recordedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_history_recordedAt` ON `${TABLE_NAME}` (`recordedAt`)"
+          },
+          {
+            "name": "index_notification_history_eventKey_recordedAt",
+            "unique": false,
+            "columnNames": [
+              "eventKey",
+              "recordedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_history_eventKey_recordedAt` ON `${TABLE_NAME}` (`eventKey`, `recordedAt`)"
+          },
+          {
+            "name": "index_notification_history_streamerStableId_recordedAt",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId",
+              "recordedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_notification_history_streamerStableId_recordedAt` ON `${TABLE_NAME}` (`streamerStableId`, `recordedAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "notification_outbox",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "outboxId"
+            ],
+            "referencedColumns": [
+              "outboxId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "notification_cooldown",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`problemKey` TEXT NOT NULL, `lastNotifiedAt` INTEGER, `cooldownUntil` INTEGER, `recoveredNotified` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`problemKey`))",
+        "fields": [
+          {
+            "fieldPath": "problemKey",
+            "columnName": "problemKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastNotifiedAt",
+            "columnName": "lastNotifiedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "cooldownUntil",
+            "columnName": "cooldownUntil",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "recoveredNotified",
+            "columnName": "recoveredNotified",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "problemKey"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "problem_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`problemKey` TEXT NOT NULL, `active` INTEGER NOT NULL, `episodeId` TEXT, `firstObservedAt` INTEGER, `recoveredAt` INTEGER, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`problemKey`))",
+        "fields": [
+          {
+            "fieldPath": "problemKey",
+            "columnName": "problemKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "active",
+            "columnName": "active",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "episodeId",
+            "columnName": "episodeId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "firstObservedAt",
+            "columnName": "firstObservedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "recoveredAt",
+            "columnName": "recoveredAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "problemKey"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_problem_state_active",
+            "unique": false,
+            "columnNames": [
+              "active"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_problem_state_active` ON `${TABLE_NAME}` (`active`)"
+          },
+          {
+            "name": "index_problem_state_updatedAt",
+            "unique": false,
+            "columnNames": [
+              "updatedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_problem_state_updatedAt` ON `${TABLE_NAME}` (`updatedAt`)"
+          },
+          {
+            "name": "index_problem_state_active_updatedAt",
+            "unique": false,
+            "columnNames": [
+              "active",
+              "updatedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_problem_state_active_updatedAt` ON `${TABLE_NAME}` (`active`, `updatedAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "monitoring_config",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singletonId` INTEGER NOT NULL, `configVersion` INTEGER NOT NULL, `monitoringEnabled` INTEGER NOT NULL, `mode` TEXT NOT NULL, `intervalSeconds` INTEGER NOT NULL, `batchSize` INTEGER NOT NULL, `maxConcurrency` INTEGER NOT NULL, `timeoutSeconds` INTEGER NOT NULL, `maxRetries` INTEGER NOT NULL, `retryBaseSeconds` INTEGER NOT NULL, `maxRetryDelaySeconds` INTEGER NOT NULL, `circuitBreakerThreshold` INTEGER NOT NULL, `circuitBreakerRecoverySeconds` INTEGER NOT NULL, `aggregationEnabled` INTEGER NOT NULL, `aggregationThreshold` INTEGER NOT NULL, `aggregationWindowSeconds` INTEGER NOT NULL, `batchCooldownSeconds` INTEGER NOT NULL, `freshnessStaleSeconds` INTEGER NOT NULL, `backgroundKeepAliveChoice` TEXT NOT NULL, `noGuaranteeAcknowledged` INTEGER NOT NULL, `noGuaranteeAcknowledgedAt` INTEGER, `startConfirmationCount` INTEGER NOT NULL, `endConfirmationCount` INTEGER NOT NULL, `placeholderText` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`singletonId`))",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singletonId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "configVersion",
+            "columnName": "configVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitoringEnabled",
+            "columnName": "monitoringEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mode",
+            "columnName": "mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "intervalSeconds",
+            "columnName": "intervalSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batchSize",
+            "columnName": "batchSize",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxConcurrency",
+            "columnName": "maxConcurrency",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeoutSeconds",
+            "columnName": "timeoutSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxRetries",
+            "columnName": "maxRetries",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "retryBaseSeconds",
+            "columnName": "retryBaseSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxRetryDelaySeconds",
+            "columnName": "maxRetryDelaySeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "circuitBreakerThreshold",
+            "columnName": "circuitBreakerThreshold",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "circuitBreakerRecoverySeconds",
+            "columnName": "circuitBreakerRecoverySeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregationEnabled",
+            "columnName": "aggregationEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregationThreshold",
+            "columnName": "aggregationThreshold",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregationWindowSeconds",
+            "columnName": "aggregationWindowSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batchCooldownSeconds",
+            "columnName": "batchCooldownSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "freshnessStaleSeconds",
+            "columnName": "freshnessStaleSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backgroundKeepAliveChoice",
+            "columnName": "backgroundKeepAliveChoice",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "noGuaranteeAcknowledged",
+            "columnName": "noGuaranteeAcknowledged",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "noGuaranteeAcknowledgedAt",
+            "columnName": "noGuaranteeAcknowledgedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startConfirmationCount",
+            "columnName": "startConfirmationCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endConfirmationCount",
+            "columnName": "endConfirmationCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "placeholderText",
+            "columnName": "placeholderText",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singletonId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "monitoring_config_revision",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`configVersion` INTEGER NOT NULL, `monitoringEnabled` INTEGER NOT NULL, `mode` TEXT NOT NULL, `intervalSeconds` INTEGER NOT NULL, `batchSize` INTEGER NOT NULL, `maxConcurrency` INTEGER NOT NULL, `timeoutSeconds` INTEGER NOT NULL, `maxRetries` INTEGER NOT NULL, `retryBaseSeconds` INTEGER NOT NULL, `maxRetryDelaySeconds` INTEGER NOT NULL, `circuitBreakerThreshold` INTEGER NOT NULL, `circuitBreakerRecoverySeconds` INTEGER NOT NULL, `aggregationEnabled` INTEGER NOT NULL, `aggregationThreshold` INTEGER NOT NULL, `aggregationWindowSeconds` INTEGER NOT NULL, `batchCooldownSeconds` INTEGER NOT NULL, `freshnessStaleSeconds` INTEGER NOT NULL, `backgroundKeepAliveChoice` TEXT NOT NULL, `noGuaranteeAcknowledged` INTEGER NOT NULL, `noGuaranteeAcknowledgedAt` INTEGER, `startConfirmationCount` INTEGER NOT NULL, `endConfirmationCount` INTEGER NOT NULL, `placeholderText` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`configVersion`))",
+        "fields": [
+          {
+            "fieldPath": "configVersion",
+            "columnName": "configVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitoringEnabled",
+            "columnName": "monitoringEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mode",
+            "columnName": "mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "intervalSeconds",
+            "columnName": "intervalSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batchSize",
+            "columnName": "batchSize",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxConcurrency",
+            "columnName": "maxConcurrency",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeoutSeconds",
+            "columnName": "timeoutSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxRetries",
+            "columnName": "maxRetries",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "retryBaseSeconds",
+            "columnName": "retryBaseSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxRetryDelaySeconds",
+            "columnName": "maxRetryDelaySeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "circuitBreakerThreshold",
+            "columnName": "circuitBreakerThreshold",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "circuitBreakerRecoverySeconds",
+            "columnName": "circuitBreakerRecoverySeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregationEnabled",
+            "columnName": "aggregationEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregationThreshold",
+            "columnName": "aggregationThreshold",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregationWindowSeconds",
+            "columnName": "aggregationWindowSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batchCooldownSeconds",
+            "columnName": "batchCooldownSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "freshnessStaleSeconds",
+            "columnName": "freshnessStaleSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backgroundKeepAliveChoice",
+            "columnName": "backgroundKeepAliveChoice",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "noGuaranteeAcknowledged",
+            "columnName": "noGuaranteeAcknowledged",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "noGuaranteeAcknowledgedAt",
+            "columnName": "noGuaranteeAcknowledgedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startConfirmationCount",
+            "columnName": "startConfirmationCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endConfirmationCount",
+            "columnName": "endConfirmationCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "placeholderText",
+            "columnName": "placeholderText",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "configVersion"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "source_data_revision",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singletonId` INTEGER NOT NULL, `sourceDataVersion` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`singletonId`))",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singletonId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceDataVersion",
+            "columnName": "sourceDataVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singletonId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "system_runtime_lock",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singletonId` INTEGER NOT NULL, `maintenanceMode` TEXT NOT NULL, `monitoringLeaseId` TEXT, `runtimeInstanceId` TEXT, `monitorGeneration` INTEGER NOT NULL, `fencingToken` TEXT, `leaseUntilWall` INTEGER, `leaseUntilElapsed` INTEGER, `leaseBootId` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`singletonId`))",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singletonId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maintenanceMode",
+            "columnName": "maintenanceMode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitoringLeaseId",
+            "columnName": "monitoringLeaseId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "runtimeInstanceId",
+            "columnName": "runtimeInstanceId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "monitorGeneration",
+            "columnName": "monitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fencingToken",
+            "columnName": "fencingToken",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "leaseUntilWall",
+            "columnName": "leaseUntilWall",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "leaseUntilElapsed",
+            "columnName": "leaseUntilElapsed",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "leaseBootId",
+            "columnName": "leaseBootId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singletonId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "streamer_monitor_policy",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`streamerId` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `intervalSeconds` INTEGER, `notifyStart` INTEGER NOT NULL, `notifyEnd` INTEGER NOT NULL, `notifyRound` INTEGER NOT NULL, `startConfirmationCount` INTEGER, `endConfirmationCount` INTEGER, `aggregationEnabledOverride` INTEGER, `aggregationThresholdOverride` INTEGER, `overrideQuietHours` INTEGER, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`streamerId`), FOREIGN KEY(`streamerId`) REFERENCES `streamer`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "streamerId",
+            "columnName": "streamerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "intervalSeconds",
+            "columnName": "intervalSeconds",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "notifyStart",
+            "columnName": "notifyStart",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notifyEnd",
+            "columnName": "notifyEnd",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notifyRound",
+            "columnName": "notifyRound",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startConfirmationCount",
+            "columnName": "startConfirmationCount",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "endConfirmationCount",
+            "columnName": "endConfirmationCount",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "aggregationEnabledOverride",
+            "columnName": "aggregationEnabledOverride",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "aggregationThresholdOverride",
+            "columnName": "aggregationThresholdOverride",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "overrideQuietHours",
+            "columnName": "overrideQuietHours",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "streamerId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": [
+          {
+            "table": "streamer",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "streamerId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "statistics_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`cacheKey` TEXT NOT NULL, `statisticsVersion` INTEGER NOT NULL, `sourceDataVersion` INTEGER NOT NULL, `queryFingerprint` TEXT NOT NULL, `timezone` TEXT NOT NULL, `eligibility` TEXT NOT NULL, `calculatedAt` INTEGER NOT NULL, `payloadJson` TEXT NOT NULL, PRIMARY KEY(`cacheKey`))",
+        "fields": [
+          {
+            "fieldPath": "cacheKey",
+            "columnName": "cacheKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "statisticsVersion",
+            "columnName": "statisticsVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceDataVersion",
+            "columnName": "sourceDataVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queryFingerprint",
+            "columnName": "queryFingerprint",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timezone",
+            "columnName": "timezone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eligibility",
+            "columnName": "eligibility",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "calculatedAt",
+            "columnName": "calculatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "cacheKey"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_statistics_cache_sourceDataVersion",
+            "unique": false,
+            "columnNames": [
+              "sourceDataVersion"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_statistics_cache_sourceDataVersion` ON `${TABLE_NAME}` (`sourceDataVersion`)"
+          },
+          {
+            "name": "index_statistics_cache_calculatedAt",
+            "unique": false,
+            "columnNames": [
+              "calculatedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_statistics_cache_calculatedAt` ON `${TABLE_NAME}` (`calculatedAt`)"
+          },
+          {
+            "name": "index_statistics_cache_queryFingerprint",
+            "unique": true,
+            "columnNames": [
+              "queryFingerprint"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_statistics_cache_queryFingerprint` ON `${TABLE_NAME}` (`queryFingerprint`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "statistics_snapshot",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshotId` TEXT NOT NULL, `cacheKey` TEXT, `statisticsVersion` INTEGER NOT NULL, `sourceDataVersion` INTEGER NOT NULL, `timezone` TEXT NOT NULL, `eligibility` TEXT NOT NULL, `queryFingerprint` TEXT NOT NULL, `generatedAt` INTEGER NOT NULL, `expiresAt` INTEGER, `payloadJson` TEXT NOT NULL, PRIMARY KEY(`snapshotId`), FOREIGN KEY(`cacheKey`) REFERENCES `statistics_cache`(`cacheKey`) ON UPDATE NO ACTION ON DELETE SET NULL )",
+        "fields": [
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshotId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cacheKey",
+            "columnName": "cacheKey",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "statisticsVersion",
+            "columnName": "statisticsVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceDataVersion",
+            "columnName": "sourceDataVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timezone",
+            "columnName": "timezone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eligibility",
+            "columnName": "eligibility",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queryFingerprint",
+            "columnName": "queryFingerprint",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "generatedAt",
+            "columnName": "generatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expiresAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "snapshotId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_statistics_snapshot_cacheKey",
+            "unique": false,
+            "columnNames": [
+              "cacheKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_statistics_snapshot_cacheKey` ON `${TABLE_NAME}` (`cacheKey`)"
+          },
+          {
+            "name": "index_statistics_snapshot_generatedAt",
+            "unique": false,
+            "columnNames": [
+              "generatedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_statistics_snapshot_generatedAt` ON `${TABLE_NAME}` (`generatedAt`)"
+          },
+          {
+            "name": "index_statistics_snapshot_expiresAt",
+            "unique": false,
+            "columnNames": [
+              "expiresAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_statistics_snapshot_expiresAt` ON `${TABLE_NAME}` (`expiresAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "statistics_cache",
+            "onDelete": "SET NULL",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "cacheKey"
+            ],
+            "referencedColumns": [
+              "cacheKey"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "statistics_revision",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`statisticsVersion` INTEGER NOT NULL, `sourceDataVersion` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`statisticsVersion`))",
+        "fields": [
+          {
+            "fieldPath": "statisticsVersion",
+            "columnName": "statisticsVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceDataVersion",
+            "columnName": "sourceDataVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "statisticsVersion"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_statistics_revision_sourceDataVersion",
+            "unique": false,
+            "columnNames": [
+              "sourceDataVersion"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_statistics_revision_sourceDataVersion` ON `${TABLE_NAME}` (`sourceDataVersion`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "export_snapshot",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshotId` TEXT NOT NULL, `exportType` TEXT NOT NULL, `sourceDataVersion` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `expiresAt` INTEGER, `status` TEXT NOT NULL, PRIMARY KEY(`snapshotId`))",
+        "fields": [
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshotId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "exportType",
+            "columnName": "exportType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceDataVersion",
+            "columnName": "sourceDataVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expiresAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "snapshotId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_export_snapshot_status",
+            "unique": false,
+            "columnNames": [
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_export_snapshot_status` ON `${TABLE_NAME}` (`status`)"
+          },
+          {
+            "name": "index_export_snapshot_expiresAt",
+            "unique": false,
+            "columnNames": [
+              "expiresAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_export_snapshot_expiresAt` ON `${TABLE_NAME}` (`expiresAt`)"
+          },
+          {
+            "name": "index_export_snapshot_createdAt",
+            "unique": false,
+            "columnNames": [
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_export_snapshot_createdAt` ON `${TABLE_NAME}` (`createdAt`)"
+          },
+          {
+            "name": "index_export_snapshot_status_expiresAt",
+            "unique": false,
+            "columnNames": [
+              "status",
+              "expiresAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_export_snapshot_status_expiresAt` ON `${TABLE_NAME}` (`status`, `expiresAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "export_snapshot_live_session",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshotId` TEXT NOT NULL, `sessionStableId` TEXT NOT NULL, `rowJson` TEXT NOT NULL, PRIMARY KEY(`snapshotId`, `sessionStableId`), FOREIGN KEY(`snapshotId`) REFERENCES `export_snapshot`(`snapshotId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshotId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionStableId",
+            "columnName": "sessionStableId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rowJson",
+            "columnName": "rowJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "snapshotId",
+            "sessionStableId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_export_snapshot_live_session_snapshotId",
+            "unique": false,
+            "columnNames": [
+              "snapshotId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_export_snapshot_live_session_snapshotId` ON `${TABLE_NAME}` (`snapshotId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "export_snapshot",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "snapshotId"
+            ],
+            "referencedColumns": [
+              "snapshotId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "restore_run",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`restoreRunId` TEXT NOT NULL, `backupId` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, `finishedAt` INTEGER, `status` TEXT NOT NULL, `finishReason` TEXT, `warningCount` INTEGER NOT NULL, PRIMARY KEY(`restoreRunId`))",
+        "fields": [
+          {
+            "fieldPath": "restoreRunId",
+            "columnName": "restoreRunId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backupId",
+            "columnName": "backupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finishedAt",
+            "columnName": "finishedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finishReason",
+            "columnName": "finishReason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "warningCount",
+            "columnName": "warningCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "restoreRunId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_restore_run_backupId",
+            "unique": false,
+            "columnNames": [
+              "backupId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_restore_run_backupId` ON `${TABLE_NAME}` (`backupId`)"
+          },
+          {
+            "name": "index_restore_run_status",
+            "unique": false,
+            "columnNames": [
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_restore_run_status` ON `${TABLE_NAME}` (`status`)"
+          },
+          {
+            "name": "index_restore_run_backupId_startedAt",
+            "unique": false,
+            "columnNames": [
+              "backupId",
+              "startedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_restore_run_backupId_startedAt` ON `${TABLE_NAME}` (`backupId`, `startedAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "restore_conflict",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`conflictId` TEXT NOT NULL, `restoreRunId` TEXT NOT NULL, `type` TEXT NOT NULL, `backupStableId` TEXT, `backupUid` INTEGER, `localStableId` TEXT, `localUid` INTEGER, `decision` TEXT, PRIMARY KEY(`conflictId`), FOREIGN KEY(`restoreRunId`) REFERENCES `restore_run`(`restoreRunId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "conflictId",
+            "columnName": "conflictId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "restoreRunId",
+            "columnName": "restoreRunId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backupStableId",
+            "columnName": "backupStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "backupUid",
+            "columnName": "backupUid",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "localStableId",
+            "columnName": "localStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "localUid",
+            "columnName": "localUid",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "decision",
+            "columnName": "decision",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "conflictId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_restore_conflict_restoreRunId",
+            "unique": false,
+            "columnNames": [
+              "restoreRunId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_restore_conflict_restoreRunId` ON `${TABLE_NAME}` (`restoreRunId`)"
+          },
+          {
+            "name": "index_restore_conflict_type",
+            "unique": false,
+            "columnNames": [
+              "type"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_restore_conflict_type` ON `${TABLE_NAME}` (`type`)"
+          },
+          {
+            "name": "index_restore_conflict_restoreRunId_type",
+            "unique": false,
+            "columnNames": [
+              "restoreRunId",
+              "type"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_restore_conflict_restoreRunId_type` ON `${TABLE_NAME}` (`restoreRunId`, `type`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "restore_run",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "restoreRunId"
+            ],
+            "referencedColumns": [
+              "restoreRunId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "auth_session",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`authSessionId` TEXT NOT NULL, `authGeneration` INTEGER NOT NULL, `accountHint` TEXT, `createdAt` INTEGER NOT NULL, `revokedAt` INTEGER, PRIMARY KEY(`authSessionId`))",
+        "fields": [
+          {
+            "fieldPath": "authSessionId",
+            "columnName": "authSessionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authGeneration",
+            "columnName": "authGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountHint",
+            "columnName": "accountHint",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revokedAt",
+            "columnName": "revokedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "authSessionId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_auth_session_authGeneration",
+            "unique": false,
+            "columnNames": [
+              "authGeneration"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_auth_session_authGeneration` ON `${TABLE_NAME}` (`authGeneration`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "follow_import_task",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`importTaskId` TEXT NOT NULL, `authGeneration` INTEGER NOT NULL, `status` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, `finishedAt` INTEGER, `stagingCount` INTEGER NOT NULL, `error` TEXT, PRIMARY KEY(`importTaskId`))",
+        "fields": [
+          {
+            "fieldPath": "importTaskId",
+            "columnName": "importTaskId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authGeneration",
+            "columnName": "authGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finishedAt",
+            "columnName": "finishedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "stagingCount",
+            "columnName": "stagingCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "error",
+            "columnName": "error",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "importTaskId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_follow_import_task_status",
+            "unique": false,
+            "columnNames": [
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_follow_import_task_status` ON `${TABLE_NAME}` (`status`)"
+          },
+          {
+            "name": "index_follow_import_task_startedAt",
+            "unique": false,
+            "columnNames": [
+              "startedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_follow_import_task_startedAt` ON `${TABLE_NAME}` (`startedAt`)"
+          },
+          {
+            "name": "index_follow_import_task_status_startedAt",
+            "unique": false,
+            "columnNames": [
+              "status",
+              "startedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_follow_import_task_status_startedAt` ON `${TABLE_NAME}` (`status`, `startedAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "follow_import_staging",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`importTaskId` TEXT NOT NULL, `uid` INTEGER NOT NULL, `authGeneration` INTEGER NOT NULL, `payloadJson` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`importTaskId`, `uid`), FOREIGN KEY(`importTaskId`) REFERENCES `follow_import_task`(`importTaskId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "importTaskId",
+            "columnName": "importTaskId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uid",
+            "columnName": "uid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authGeneration",
+            "columnName": "authGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "importTaskId",
+            "uid"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_follow_import_staging_importTaskId",
+            "unique": false,
+            "columnNames": [
+              "importTaskId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_follow_import_staging_importTaskId` ON `${TABLE_NAME}` (`importTaskId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "follow_import_task",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "importTaskId"
+            ],
+            "referencedColumns": [
+              "importTaskId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "audit_log",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`auditId` TEXT NOT NULL, `operationId` TEXT NOT NULL, `actor` TEXT NOT NULL, `action` TEXT NOT NULL, `targetType` TEXT NOT NULL, `targetStableId` TEXT, `occurredAt` INTEGER NOT NULL, `detailJson` TEXT, PRIMARY KEY(`auditId`))",
+        "fields": [
+          {
+            "fieldPath": "auditId",
+            "columnName": "auditId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "actor",
+            "columnName": "actor",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetType",
+            "columnName": "targetType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetStableId",
+            "columnName": "targetStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detailJson",
+            "columnName": "detailJson",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "auditId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_audit_log_operationId_action",
+            "unique": true,
+            "columnNames": [
+              "operationId",
+              "action"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_audit_log_operationId_action` ON `${TABLE_NAME}` (`operationId`, `action`)"
+          },
+          {
+            "name": "index_audit_log_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_audit_log_occurredAt` ON `${TABLE_NAME}` (`occurredAt`)"
+          },
+          {
+            "name": "index_audit_log_targetType_targetStableId_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "targetType",
+              "targetStableId",
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_audit_log_targetType_targetStableId_occurredAt` ON `${TABLE_NAME}` (`targetType`, `targetStableId`, `occurredAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "monitoring_error_log",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`errorId` TEXT NOT NULL, `problemKey` TEXT NOT NULL, `streamerStableId` TEXT, `observationSequence` INTEGER, `occurredAt` INTEGER NOT NULL, `errorCode` TEXT NOT NULL, `detail` TEXT, PRIMARY KEY(`errorId`))",
+        "fields": [
+          {
+            "fieldPath": "errorId",
+            "columnName": "errorId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "problemKey",
+            "columnName": "problemKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamerStableId",
+            "columnName": "streamerStableId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "observationSequence",
+            "columnName": "observationSequence",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detail",
+            "columnName": "detail",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "errorId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_monitoring_error_log_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_error_log_occurredAt` ON `${TABLE_NAME}` (`occurredAt`)"
+          },
+          {
+            "name": "index_monitoring_error_log_problemKey",
+            "unique": false,
+            "columnNames": [
+              "problemKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_error_log_problemKey` ON `${TABLE_NAME}` (`problemKey`)"
+          },
+          {
+            "name": "index_monitoring_error_log_streamerStableId",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_error_log_streamerStableId` ON `${TABLE_NAME}` (`streamerStableId`)"
+          },
+          {
+            "name": "index_monitoring_error_log_problemKey_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "problemKey",
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_error_log_problemKey_occurredAt` ON `${TABLE_NAME}` (`problemKey`, `occurredAt`)"
+          },
+          {
+            "name": "index_monitoring_error_log_streamerStableId_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "streamerStableId",
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_monitoring_error_log_streamerStableId_occurredAt` ON `${TABLE_NAME}` (`streamerStableId`, `occurredAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "application_error_log",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`errorId` TEXT NOT NULL, `operationId` TEXT, `occurredAt` INTEGER NOT NULL, `errorCode` TEXT NOT NULL, `detail` TEXT, PRIMARY KEY(`errorId`))",
+        "fields": [
+          {
+            "fieldPath": "errorId",
+            "columnName": "errorId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detail",
+            "columnName": "detail",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "errorId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_application_error_log_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_application_error_log_occurredAt` ON `${TABLE_NAME}` (`occurredAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "crash_record",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`crashId` TEXT NOT NULL, `bootId` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `processInstanceId` TEXT, `exitReason` TEXT NOT NULL, `recoveredAt` INTEGER, PRIMARY KEY(`crashId`))",
+        "fields": [
+          {
+            "fieldPath": "crashId",
+            "columnName": "crashId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bootId",
+            "columnName": "bootId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "processInstanceId",
+            "columnName": "processInstanceId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "exitReason",
+            "columnName": "exitReason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recoveredAt",
+            "columnName": "recoveredAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "crashId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_crash_record_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_crash_record_occurredAt` ON `${TABLE_NAME}` (`occurredAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "health_event",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`healthEventId` TEXT NOT NULL, `component` TEXT NOT NULL, `fromStatus` TEXT, `toStatus` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `episodeId` TEXT, PRIMARY KEY(`healthEventId`))",
+        "fields": [
+          {
+            "fieldPath": "healthEventId",
+            "columnName": "healthEventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "component",
+            "columnName": "component",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fromStatus",
+            "columnName": "fromStatus",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "toStatus",
+            "columnName": "toStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "episodeId",
+            "columnName": "episodeId",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "healthEventId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_health_event_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_health_event_occurredAt` ON `${TABLE_NAME}` (`occurredAt`)"
+          },
+          {
+            "name": "index_health_event_episodeId",
+            "unique": false,
+            "columnNames": [
+              "episodeId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_health_event_episodeId` ON `${TABLE_NAME}` (`episodeId`)"
+          },
+          {
+            "name": "index_health_event_episodeId_occurredAt",
+            "unique": false,
+            "columnNames": [
+              "episodeId",
+              "occurredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_health_event_episodeId_occurredAt` ON `${TABLE_NAME}` (`episodeId`, `occurredAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "recovery_session",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`recoverySessionId` TEXT NOT NULL, `runtimeInstanceId` TEXT NOT NULL, `monitorGeneration` INTEGER NOT NULL, `status` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, `finishedAt` INTEGER, `finishReason` TEXT, PRIMARY KEY(`recoverySessionId`))",
+        "fields": [
+          {
+            "fieldPath": "recoverySessionId",
+            "columnName": "recoverySessionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "runtimeInstanceId",
+            "columnName": "runtimeInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorGeneration",
+            "columnName": "monitorGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finishedAt",
+            "columnName": "finishedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "finishReason",
+            "columnName": "finishReason",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "recoverySessionId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_recovery_session_startedAt",
+            "unique": false,
+            "columnNames": [
+              "startedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_recovery_session_startedAt` ON `${TABLE_NAME}` (`startedAt`)"
+          }
+        ],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '2daf7a28d6012aea89fde6d672b82bdc')"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+# 本项目对文件字节有硬性要求：每个文件必须保持自己的 BOM 与行尾风格
+# （app/src 与 publish/app/src 是逐字节镜像，含 BOM+CRLF、纯 CRLF、纯 LF 三种风格，
+#  连 DiagnosticExporter.kt 的"BOM + 混合行尾"也是刻意保留的）。
+# Git 的行尾自动转换（core.autocrlf / text=auto）会把这些文件在提交或检出时改写，
+# 于是"两棵树逐字节一致"这类校验会在另一个人的机器上莫名失败。
+# 因此全仓库关闭行尾转换：提交什么字节，检出就是什么字节。
+* -text
+
+# 二进制资源显式声明（-text 已覆盖，这里只是让 diff/语言统计更准确）
+*.png binary
+*.apk binary
+*.jar binary

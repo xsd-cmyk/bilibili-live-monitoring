@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  云备份与设备迁移规则（台账 H19-2.5 / C3）。
+
+  背景：应用此前是 `allowBackup="true"` 且**没有任何排除规则**，于是：
+   1. `databases/bilibili_monitor.db`（主播列表、直播历史、统计）会被同步到用户的云备份，
+      与"数据只保存在本机"的产品宣称不符；
+   2. 更严重的是 `shared_prefs/bili_credentials.xml`（加密的 SESSDATA 等）也会被一起带走，
+      而解开它的密钥在**原设备的 Keystore** 里、不会跟着备份走 ——
+      换机恢复后 `EncryptedSharedPreferences.create()` 抛异常，
+      而它是 Hilt 单例且被 OkHttp 依赖，失败即"应用启动就崩且无法自愈"。
+
+  处理：数据库与偏好仍然允许备份（用户换机不丢数据是好事，Room 打开旧库有迁移链兜底），
+  只把**凭证文件**排除掉 —— 登录态重新扫码即可，代价远小于崩溃。
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="bili_credentials.xml" />
+</full-backup-content>
