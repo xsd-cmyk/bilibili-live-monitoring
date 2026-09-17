@@ -145,85 +145,6 @@ Compose UI 1.7 的 `rememberGraphicsLayer()`：每帧把整页内容录进一个
 | Dock 玻璃 | 折射**它下面的真实内容**（含滚动内容）；没设背景图时也有效 |
 | 「同时应用到所有卡片」 | 卡片改为**半透明**（背景壁纸透过卡片显示）。壁纸**是否磨砂由「模糊半径」参数决定**：大于 0 时把壁纸本身模糊，卡片透出的就是磨砂壁纸；**设为 0 则完全不磨砂**，此时卡片只是一层半透明底色（复杂背景上看起来偏淡白）。**卡片不做实时折射** —— 卡片是被录制内容的子孙节点，消费同一图层会触发渲染树自引用（实测 native 崩溃），该方案已回退 |
 | 参数共用 | 模糊半径 / 玻璃浓度 / 高光强度 / 亮边两项为 Dock 与卡片共用一组，改一处两边一起变 |
-
----
-
-## 安装与构建
-
-环境：JDK 17、Android SDK（`compileSdk 35`、`minSdk 31`）。
-
-```bash
-cp local.properties.example local.properties    # 或手写 sdk.dir=<你的 Android SDK 路径>
-./gradlew :app:assembleDebug                    # 产物：app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:testDebugUnitTest                # 单元测试（33 个 suite / 315 个用例）
-```
-
-### 零安装构建：`管理图标.cmd` + `build-env/`
-
-`管理图标.cmd` 是给非开发者用的图标 / 名称管理器（双击即用、中文交互菜单，最后编译出 APK）。
-为了让它在**没装 JDK / Android Studio 的电脑**上也能编译，编译所需的整套工具链可以放进
-本文件夹的 `build-env/`（约 1.1 GB）：
-
-```
-build-env/
-  jdk/                        便携 JDK 17
-  android-sdk/                platforms/android-35、build-tools（整份：34.0.0 + 35.0.0）、
-                              platform-tools、licenses
-  gradle-home/                Gradle 用户目录：发行包本体 + 已下载的依赖（离线编译靠它）
-  依赖包说明.txt              来源机器、版本、怎么重新生成
-```
-
-- **有它时**：脚本把 `JAVA_HOME` / `ANDROID_HOME` / `GRADLE_USER_HOME` 指向它，并把
-  `local.properties` 改写成指向这份 SDK，于是**不联网**（`--offline`）就能编译；
-  在菜单里选 0（不联网）即可。实测：把它拷到别处、把 PATH 里本机的 java 去掉，
-  仍能 `clean` 后完整编译出 APK。
-- **没有它时**：脚本原样使用这台电脑自己装的环境，并在启动时把这一情况说清楚，不会闷着失败。
-- **生成它**：在已经装好工具链、并且成功编译过一次的机器上跑
-  `powershell -NoProfile -ExecutionPolicy Bypass -File tools\制作依赖包.ps1`
-  （增量覆盖，可重复跑；会自动停掉 Gradle 守护进程以免依赖缓存被锁住）。
-- **不要把它提交进仓库**：JDK 的 `lib\modules` 单文件就有 122 MB，超过 GitHub 的
-  100 MB/文件硬上限，`push` 会被直接拒绝（`.gitignore` 已经排除 `build-env/`）。
-  分发请把整个文件夹（或只把 `build-env`）压成 zip 发网盘，或作为 GitHub Release
-  的附件（单附件上限 2 GB）。
-- **build-tools 为什么要整份打包**：AGP 具体要哪一版是它内部的默认值，工程文件里读不出来
-  （本项目实测要 `34.0.0`，而只打"最高版 35.0.0"会在干净机器上报
-  `Failed to find Build Tools revision 34.0.0`）。能站得住的推理是：**开发机能编过 ⇒ 它装着的
-  这套 build-tools 一定够用**，所以整份拷过去，不猜版本号。
-- **摆放检查**：启动时会打印这个文件夹"放对了没有" —— 项目文件是否齐全、依赖包在不在、
-  以及这个路径适不适合编译（中文路径、空格、路径过长、云同步目录、网络盘、没有写权限、
-  磁盘剩余空间不足，都会给出中文提示）。
-- 所有路径都相对于 `管理图标.cmd` 自己所在的文件夹（`%~dp0` / `$PSScriptRoot`），
-  整个文件夹可以放在任意位置、整体拷走。
-
-Windows 上还有一键脚本（构建 → 装机 → 启动 → 崩溃/DB 异常自检）：
-
-```powershell
-.\build-and-install.ps1              # 需要已连接设备，或已启动模拟器（没有则按脚本内配置自动启动）
-.\build-and-install.ps1 -SkipBuild   # 跳过构建，直接安装当前产物
-.\build-and-install.ps1 -NoLaunch    # 只装不启动（跳过自检）
-```
-
-**`-SkipBuild` 的坑**（脚本行为，值得先知道）：
-
-- 它**只跳过构建**，随后安装的是 `app/build/outputs/apk/debug/app-debug.apk` 这个**当前文件**；
-  如果这个文件是上一次构建留下的旧产物，你会装上旧版本却以为验证的是新代码。
-  产物不存在时脚本直接报 `APK not found` 退出。
-- 脚本**不写死本机路径**：SDK 依次取同目录 `.local.ps1` 的 `$Sdk` → `local.properties` 的 `sdk.dir`
-  → `ANDROID_SDK_ROOT` / `ANDROID_HOME` → `%LOCALAPPDATA%\Android\Sdk`；
-  AVD 目录取 `.local.ps1` → `ANDROID_AVD_HOME` → `%USERPROFILE%\.android\avd`；AVD 名默认 `BiliMonitor_Test`。
-  需要固定值时把这几项写进同目录的 `.local.ps1`（该文件不进仓库）。
-- 构建用 `--offline`：首次构建需要 Gradle 缓存已经预热（否则请先联网跑一次 `gradlew :app:assembleDebug`）。
-- 安装用 `adb install -r`（保留应用数据），并在安装后授予通知权限，再启动应用检查
-  `FATAL EXCEPTION` / `SQLiteConstraintException` / 迁移异常，出现即失败退出。
-
-**release 构建**开启 R8 混淆与资源压缩（`isMinifyEnabled` + `isShrinkResources`，历史产物约 5.9 MB），
-签名材料走 `keystore.properties` 或 `BILIMONITOR_*` 环境变量，缺失时产物为 unsigned。
-注意 `checkReleaseBuilds` 为开启状态，`lintVitalAnalyzeRelease` 需要一份体积较大的 lint 依赖：
-**离线环境下首次 release 构建会失败（不是代码问题），联网跑一次把依赖拉进缓存即可**。
-
-**仓库内的安装包**：`dist/Kaoru-0622.0-debug.apk`（debug 构建，使用 debug 签名，可直接安装，仅供自测；
-未开启混淆与资源压缩，因此体积较大）。
-
 ---
 
 ## 技术栈
@@ -307,7 +228,6 @@ app/src/test/       单元测试（28 个文件 / 315 个用例）
 app/src/androidTest/ instrumented 测试（1 个用例：诊断包分片与凭证边界）
 dist/               对外发布的安装包（有意入库）
 docs/               设计文档、缺陷台账、静态审查报告
-build-and-install.ps1  Windows 一键构建/装机/自检脚本
 ```
 
 规模参考：`app/src/main/java` 下 **92 个 Kotlin 文件 / 约 2.4 万行**；`@Entity` 44 个、`@Query` 244 处；
