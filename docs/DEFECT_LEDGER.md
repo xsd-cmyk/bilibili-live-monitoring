@@ -1223,6 +1223,469 @@ ActivityTaskManager: START u0 {act=android.intent.action.VIEW dat=https://live.b
 
 
 
+### H75. 订正：`SYSTEM_ALERT_WINDOW`「仅持有即豁免」是错的（实测推翻）+ root 代启动实测通过
+
+#### ① 起因
+
+用户问：「这些功能可以加强保活行为吗？同时他们有什么优点和缺点？」——
+问的正是 H73 里那几条"加强项/明确不做"。回答前先把**没验证过**的那条测掉，结果测出了相反结论。
+
+#### ② 实测一：`SYSTEM_ALERT_WINDOW` 只授权**没有**豁免效果（推翻 H73 的说法）
+
+**场景**（贴近真实被杀）：应用回桌面 → `am stopservice` 停掉前台服务 → `am kill` 杀进程 →
+以 **root** 身份发心跳广播（receiver 是 `exported=false`，只有 root/system 能发）→
+新进程里 `ensureRunning` 真正尝试一次 `startForegroundService`。
+
+| 组 | 条件 | 系统日志 | 应用侧结果 |
+|---|---|---|---|
+| A | 撤销悬浮窗 + 不在电池优化白名单 | `Background started FGS: Disallowed … uidState: RCVR` | `start_rejected:ForegroundServiceStartNotAllowedException` |
+| B | **只授予悬浮窗**（仍不在白名单） | **同样 `Disallowed`** | **同样 `start_rejected`** |
+| C | 只加入电池优化白名单（无悬浮窗） | `Background started FGS: Allowed` | `started_realtime` ✓ |
+
+**结论**：豁免看的是"应用**有可见窗口**"（真的画了悬浮窗），**不是**"持有权限"。
+H73 里写的"仅仅持有该权限本身就是官方豁免"（依据是 AOSP 允许原因码
+`REASON_SYSTEM_ALERT_WINDOW_PERMISSION = 62` 的名字与分段）**被实测推翻** ——
+原因码存在不等于判定条件就是"持有权限"。
+
+**处置**（不留"看起来有用、实测无用"的东西）：
+- 撤掉清单里的 `SYSTEM_ALERT_WINDOW` 声明（顺便少一个敏感权限，对用户更诚实）；
+- 撤掉卡片里的「显示在其他应用上层」入口、`PowerExemption.canDrawOverlays`、
+  `overlayPermissionIntent()`、设置页传参与诊断包 `keepAliveCanDrawOverlays` 字段；
+- 清单里留一段注释说明**为什么刻意不声明**，并把这次的 A/B 结果写进去，避免以后有人再加回来。
+
+#### ③ 实测二：root 代启动**确实**能绕过导出检查与后台启动限制
+
+同一套场景（应用在后台、服务已停、进程已杀），以 `adb root`（uid 0）执行
+`am start-foreground-service -n com.example.bilimonitor/.background.MonitoringService`：
+
+```
+Background started FGS: Allowed [callingPackage: com.android.shell; callingUid: 0; uidState: NONE; …]
+Start proc 7061:com.example.bilimonitor/u0a158 for service {…MonitoringService}
+→ pid 起来、服务记录=1、isForeground=true
+```
+
+**结论**：uid 0 确实能启动一个 `exported=false` 的前台服务，且不受"后台启动限制"约束 ——
+这正是 H73 里 root 档"代启动"兜底所依赖的前提。
+（模拟器上应用自己拿不到 su，所以测的是**等价命令**：`adb root` 后的 shell 与"应用经 su 执行同一条命令"
+在权限身份上一致；应用侧 `su -c` 那段代码仍只在真机可跑。）
+
+#### ④ 一并落实的"不做"清单（连同理由，均已在 README/界面如实说明）
+
+| 不做的事 | 技术有效性 | 为什么不采用 |
+|---|---|---|
+| `setAlarmClock` 当心跳 | **有效**：不受 Doze 延迟约束（`isTempAllowedByAlarmClock` 还会放宽"后台受限"判定），恢复延迟比 `…AndAllowWhileIdle` 更短 | 会在状态栏显示系统闹钟图标、进入用户的闹钟列表（本质是欺骗性展示）；同样受 `SCHEDULE_EXACT_ALARM` 撤销牵连；Play 只允许闹钟/日历类应用用 `USE_EXACT_ALARM`。**若用户明确要"强力模式"可再议**（需如实告知代价） |
+| 双进程互拉（`android:process`） | **基本无效**：同 uid 的进程在 LMK 眼里一起死；"互拉"要么靠后台启动前台服务（被拒）、要么靠绑定（客户端已死则无效），还要双份内存 | 无效 + 增加耗电与复杂度 |
+| 滥用前台服务类型（无声音乐 / 伪装 dataSync） | 短期"能用"，但 Android 14+ 类型需要对应权限与申报；且**本项目已用 `specialUse`（无时长上限）**，换类型只会更差 | 政策违规 + 风险，且没有收益 |
+| 全局关 App Standby（`settings put global …`） | 有效，但作用于**整机所有应用** | 为单个应用改全机省电策略，代价与收益不成比例；按应用的白名单/待机桶已经够用 |
+
+#### ⑤ 回归
+
+`assembleDebug` + `compileDebugAndroidTestKotlin` + 单测 **37 套件 / 343 用例 / 0 失败**；
+`app/src` 两棵树 **232/232 逐字节一致**。
+
+---
+
+---
+
+### H74. 通知合并阈值的语义修正：阈值是「触发合并的条件」，不是「每条通知装多少位」
+
+#### ① 用户诉求（原话）
+
+「你先帮我把这个功能改一下，就是那个通知合并阈值那个功能，我的意思是在**超过多少名主播需要一起发通知之后合并所有主播的通知**。
+而不是让你合并多少名主播的通知。」
+
+#### ② 旧行为是什么（为什么会收到好几条）
+
+聚合链路原本有两处触发点，**都把阈值当成了"每批装多少"**：
+
+| 位置 | 旧代码 | 后果 |
+|---|---|---|
+| `NotificationOutboxWriter.bindOrCreateAggregate` | 窗口内计数 `count >= threshold` 就**立刻**冻结窗口 + 创建批次 Outbox | 一个突发被"装满即打包"切成多个批次 |
+| `NotificationRepository.processWindowEnds` | 窗口关闭时 `bindings.size >= threshold` 才合并 | 剩下的零头又被单独发出去 |
+
+于是「阈值 4，10 位主播在同一个 5 秒窗口内开播」的实际结果是 **3 条通知**：
+批次 #1（4 位）→ 新窗口 → 批次 #2（4 位）→ 新窗口（窗口关闭时只剩 2 位，不足阈值）→ 2 条单发。
+用户要的是 **1 条含全部 10 位**。
+
+#### ③ 新语义与实现
+
+**语义**：同一个聚合窗口内需要发通知的主播 **超过**阈值 → 把这一批**全部**合并成一条；不超过 → 逐条单独发。
+
+1. **新增纯策略对象** `domain/policy/NotificationAggregationPolicy`：
+   `shouldMergeAll(pendingCount, threshold) = pendingCount > threshold`（**严格大于**：正好等于阈值不合并）
+   与 `usesAggregationWindow(enabled, threshold) = enabled && threshold >= 1`。抽出来是为了能纯 JVM 单测边界。
+2. **绑定时不再提前冻结**（`bindOrCreateAggregate`）：窗口内一直收集，只在仍处于 `COLLECTING` 时更新计数缓存
+   （CAS 的 from 用当前状态，避免把 `FROZEN`/`DISPATCHED` 的窗口"降级"回 `COLLECTING`）。
+3. **窗口关闭时定案**（`processWindowEnds`）：走策略对象判定 —— 超过 → 冻结 + 一条含**本窗口全部**主播的批次；
+   不超过 → 释放绑定 + 逐条单发（原逻辑不变）。
+4. **门控修正**：`createForEvent` 原本要求 `aggregationThreshold > 1`，而配置校验允许阈值 1
+   （阈值 1 的含义是"超过 1 位就合并"，即 2 位以上）——原写法会把阈值 1 **静默**变成"完全不聚合"，
+   与说法自相矛盾。现改为 `>= 1`。
+5. **合并通知正文**（`NotificationPoster.buildBatch`）：原先硬取前 5 位名字，人数一多正文只剩「等」。
+   新增纯函数 `NotificationTemplate.joinStreamerNames(names, max)`：按正文长度上限尽量多列，
+   放不下才用「等」收尾；单个名字就超长时至少显示它自己。长度上限统一用 `MAX_TEXT_LENGTH`（原先是硬编码 120）。
+6. **设置页文案**（用户明确纠正过这个区别，文案不许再写成"每次合并多少位"）：
+   - 说明：同一批（几秒内）需要通知的主播**超过**下面的阈值时，把这一批**全部**合并成一条通知；不超过则逐个单独发；
+   - 步进器：`超过 N 位主播需要通知时合并（当前 N）`（原为「合并阈值：N 个开播事件」）。
+7. **UI 文案里的 Markdown 星号**（截图实证后补修）：我最初把说明写成
+   `主播**超过**下面的阈值时…这一批**全部**合并`，而 **Compose 的 `Text` 不解析 Markdown**，
+   星号被原样画了出来（模拟器截图可见）。已改成项目惯用的「」写法，
+   并顺手修掉一处**早前就存在**的同类问题（数据页「也**不含通知历史与投递记录**」）。
+   契约测试里补了一条断言防止回退 —— 只查界面文案，不误伤源码注释/KDoc 里合法的加粗写法
+   （第一次写宽了，把 KDoc 一起算进去，测试立刻报错，已收窄）。
+
+关于"等窗口关闭"的代价：聚合窗口默认 **5 秒**（`doc_v2.4.md`：`aggregationWindowSeconds = 5`，
+且设置页没有窗口入口），所以最多多等几秒，换来"一条通知含全部主播"。
+
+#### ④ 验证（含"测试必须能红"的注入验证）
+
+- **纯规则单测**（新增 `NotificationAggregationPolicyTest`，5 例）：严格大于的边界（正好等于阈值不合并）、
+  阈值 1 = 2 位就合并、一位永远不合并、"阈值不是数量上限"（10 位阈值 4 → 合并）、门控必须接受阈值 1。
+- **接线契约测试**（新增 `NotificationAggregationWiringContractTest`，5 例，读源码）：
+  绑定阶段不得出现 `FROZEN`/`createBatchOutbox`；窗口关闭必须用 `shouldMergeAll` 且不得回退成
+  `bindings.size >= fresh.threshold`；门控不得回退成 `aggregationThreshold > 1`；
+  正文必须用 `joinStreamerNames` 且不得回退成 `names.take(5)`；设置页不得回退成「合并阈值：…个开播事件」。
+  **注入验证**：把 `>` 改回 `>=` 后该测试**确实失败**（不是空绿）。
+- **真库行为测试**（新增 instrumented `NotificationAggregationInstrumentedTest`，4 例，真 Room + 真实事务路径）：
+  1) 6 位主播、阈值 4：窗口未关闭时**一条都不发**（这条断言直接对应旧实现的缺陷），
+     窗口关闭后**恰好 1 条**合并通知且 payload 里 `items.size == 6`（全部主播）；
+  2) 正好 4 位（等于阈值）→ 0 条合并 + 4 条单发；
+  3) 阈值 1 + 2 位 → 1 条合并（含 2 位）；
+  4) 1 位 → 不合并，单发。
+  在 Android 15 模拟器上实跑：**4/4 通过**；随后把旧的"提前冻结"注入回 writer，
+  该测试**变成失败**（`BUILD FAILED`），还原字节后重新通过且字节完全一致 —— 即这个测试真的在守这条语义。
+- **回归**：`assembleDebug` + `compileDebugAndroidTestKotlin` + 单测 **37 套件 / 343 用例 / 0 失败**。
+
+#### ⑤ 未验证与边界（如实记录）
+
+- **没有制造"真实多位主播同时开播"的线上突发**：instrumented 测试是往真库里写入事件、再走**真实的窗口结算路径**
+  （`processWindowEnds`）来验证的，覆盖了聚合与批次装配；但"引擎在真实 Tick 中连续确认多位开播"这段
+  只做了代码层核对（它逐条调用同一个 `createForEvent`）。
+- **聚合窗口长度仍不可配**（界面无入口，默认 5 秒）：这属于既有状况（台账早前已记录
+  "界面改不了但校验照样拦"的三项之一），本轮没有改。
+- 合并通知正文的截断是**按字符数**（不是按字形宽度）：中文与 emoji 混排时略保守，宁可少列一个名字也不超上限。
+
+---
+
+---
+
+### H73. 保活代码审查（3 个只读代理 + 自审）与保活加强
+
+#### ① 起因
+
+用户要求：「审查一遍保活的代码，看一下有什么 bug，然后再找一下有什么可以加强保活的地方。
+我的目标是可以做到应用打开一次之后，尽量永久待在后台，无论手机处于锁屏还是打游戏等其他状态。」
+
+#### ② 审查方式
+
+派 3 个**只读**代理（禁止创建/修改/删除文件、禁止跑 gradle/adb/git，每条结论必须给
+`文件:行号` 证据 + 触发条件 + 置信度，并要求区分「确定的缺陷」与「可疑但未验证」）：
+
+| 代理 | 范围 | 交付 |
+|---|---|---|
+| A | 前台服务与 wakelock 生命周期、服务 action、与引擎/Worker 的交互 | 2×P1 + 6×P2 + 「检查过且没问题」清单 |
+| B | 提权链路（Root/Shizuku 通道、命令与解析、仓库策略、UI 接线、诊断包） | **2×P0** + 6×P1 + 8×P2 |
+| C | 官方规则核对（联网找权威依据）+ 现状缺口 + 加强清单 | AOSP 源码级证据 + 12 条加强项 + 8 条明确「不建议」 |
+
+我逐条复核了报告里的每一条（读源码核对行号与语义），**没有直接采信**。下面只列经复核成立的。
+
+#### ③ 修掉的缺陷（按严重度）
+
+**P0-1 清单缺 `rikka.shizuku.ShizukuProvider` —— Shizuku 档 100% 不可用**（代理 B）
+- 证据：provider AAR 的清单里**没有** `<provider>`（只有权限与 meta-data），
+  而我在 `app/build.gradle.kts` 里写的注释却断言"由清单合并自动声明"——**那句话是错的**。
+- 后果：binder 永远收不到 → `pingBinder()` 恒 false → 按钮恒置灰、"申请授权"恒报未运行，
+  还会把用户引向"去启动 Shizuku"这个永远修不好的操作。
+- 修复：清单里手写官方那段 provider（`authorities=${applicationId}.shizuku`、`exported=true`、
+  `permission=INTERACT_ACROSS_USERS_FULL`），并改掉 build.gradle.kts 的错误注释。
+
+**P0-2 androidTest 构造签名不匹配**（代理 B）：我三次给 `DiagnosticExporter` 加构造参数都没同步
+`DiagnosticExporterTest` → `compileDebugAndroidTestKotlin` 失败，诊断包那条线的回归测试整个跑不了。
+修复后 `:app:compileDebugAndroidTestKotlin` 通过（本轮把它加进常规编译验证）。
+
+**P1-1 wakelock 丢锁竞态（永久耗电且界面看不出来）**（代理 A）
+- `acquireWakeLockIfEnabled` 在"检查是否已持有"与"给字段赋值"之间夹了一次 DataStore 读（**挂起点**），
+  循环每轮的 `syncWakeLock` 与设置页 `ACTION_SYNC_KEEP_ALIVE` 触发的 `syncWakeLock` 可交错：
+  两个协程各建一把锁、后写覆盖字段 → 第一把锁失去引用却仍被持有。
+- 修复：设置值在进入临界区**之前**读好，`applyWakeLockDesired()` 内不再有挂起点（主线程单线程执行，
+  交错不可能发生）；失败留痕改用 `appScope`（`lifecycleScope` 会随 `stopSelf` 一起被取消，
+  日志还没落库就没了 —— 而那正是最需要留原因的路径）。
+
+**P1-2 前台启动被拒时完全静默**（代理 A）：catch 里连异常对象都没用（无 Log、无错误日志），
+"实时监控为什么没起来"在诊断包里查不到任何原因。修复：`Log.e` + 错误日志（写明常见原因与去处），
+并让 `startInForeground()` 返回 Boolean —— **失败时不再启动监控循环**（原先会在已停止的服务里跑一轮 Tick）。
+
+**P1-3 root 可用性判定错、且被内存缓存坑**（代理 B）
+- `isAvailable()` 把"命令跑起来了但非 0"（典型：用户在授权框点了拒绝）当成"root 可用"。
+  修复：只有 `exitCode == 0` 才写"可用"缓存，另设 `suPathFound` 只表示"这条路径存在"。
+- 更严重的是**冷启动后缓存必空**：持久化过 ROOT 档的用户重开应用就看到"root 不可用"，
+  「查看生效状态」「撤销」全部空转，`reapplyOomGuardIfRoot()` 恰在唯一需要它的时刻静默早退。
+  修复：`shellFor` 改成"缓存为空就真探测"（`su -c id`）。
+
+**P1-4 档位与实际不符**（代理 B）：apply 四项全失败也照写 `privilegeLevel`（界面显示"已应用到系统"）；
+撤销失败也照清 level（系统里设置还在，应用却说已撤销）。修复：只在 `applied > 0` 时记档；
+撤销后仍有项生效则保留档位并如实记录。
+
+**P1-5 Shizuku 的假超时**（代理 B）：`withTimeoutOrNull { remote.waitFor() }` 拦不住阻塞的 binder 调用 ——
+命令其实成功却被记成"超时"并丢掉输出，真卡死时反而永远不返回。修复：把等待放到独立线程，
+超时后**真的** `destroy()` 远端进程。
+
+**P2 其余**（均已修）：RootShell 最坏 8×20 秒挨个试 su 路径 → 加 45 秒总预算；
+模板读失败无痕 → 一次性留痕；`syncKeepAliveNow`/`refreshForegroundNotification` 被系统拒绝只写 logcat
+→ 落错误表；心跳每 15 分钟写一条审计（含"本来就没事"）且省电/手动模式也排 → 只在实时模式排、只记实际事件；
+`releaseLease()` 不取 tickMutex（会清掉 fencingToken，误伤在飞的一轮 Tick 且归因错误）→ 改 `tryLock`；
+`detectEnvironment` 在主线程做 binder IPC → 挪到 IO；Shizuku 以 uid 0 运行时本可做 oom 保护却被写死
+"不支持" → 按 `Shizuku.getUid()` 判定；诊断包在 DataStore 读失败时用 false 冒充"关着" → 加
+`keepAliveReadFailed`；档位 NONE 时 probe/撤销去猜 ROOT → 如实回报"尚未应用"；撤销不回滚 `oom_score_adj`
+→ 写回 0；`appOpAllowed("foreground")` 把"仅前台"当成后台已放行 → 只认 allow 并如实回显读到的模式；
+卡片按"未安装"优先渲染会把 Sui（无独立应用）说成未安装 → 改成 running/authorized 优先；
+`ACTION_SYNC_KEEP_ALIVE` 返回 START_NOT_STICKY 可能改掉运行中服务的粘性 → 改回 START_STICKY（预防性）。
+
+#### ④ 保活加强（代理 C 的调研 + 落地）
+
+代理 C 的调研有一条**改变设计**的发现：**`setExactAndAllowWhileIdle` 的 AOSP javadoc 逐字写着
+「用这个 API 排的闹钟，即使应用在后台也允许启动前台服务」** —— 而 `setAndAllowWhileIdle` 没有这句
+（只保证约 10 秒临时电源豁免）。这正是"被杀之后自己回来"缺的那条豁免。
+
+落地（全部落在官方豁免或已核实的系统行为上）：
+
+1. **免 root 的"忽略电池优化"入口**（本轮最先做）：实测过的两个杀手（关屏约 3 分钟后
+   `Stopping service due to app idle`、以及之后的 `Background start not allowed`）都能靠它解决 ——
+   AOSP 允许原因码 `REASON_ALLOWLISTED_PACKAGE = 65`，且在白名单上的应用**同样可以排精确闹钟**。
+   卡片顶部新增状态 + 一键申请（`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`，ROM 不认则退回列表页）。
+2. **心跳链自愈**：清单加 `SCHEDULE_EXACT_ALARM`（**不用**受 Play 政策限制的 `USE_EXACT_ALARM`）；
+   新增 `ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED` 接收（撤销该权限时系统会**删掉**
+   所有 `setExact*` 闹钟 → 链会静默断掉）；每轮 Tick 与配置同步时用 `isScheduled()` 校验并补排；
+   排程失败落错误表而不再只写 logcat。
+3. **提权设置幂等重放**（`reapplyIfNeeded`）：服务每次启动把 Doze 白名单/待机桶/appops/oom 按当前档位
+   重放并读回校验 —— 这些系统项会"自己掉"（待机桶被系统重新分级、白名单被用户撤销、appops 重装回默认）。
+4. **三条零成本恢复入口**：静态注册 `TIME_SET` / `TIMEZONE_CHANGED` / `LOCALE_CHANGED` → `ensureRunning`
+   （AOSP 允许原因码 204/205/206，且是 API 26+ 仍允许静态注册的少数隐式广播）。
+5. **无障碍重绑恢复**：`KeepAliveAccessibilityService.onServiceConnected()` → `ensureRunning` ——
+   系统重绑无障碍服务时会拉起应用进程，这是**不依赖闹钟**的独立通道（没开无障碍的用户零影响）。
+6. **~~声明 `SYSTEM_ALERT_WINDOW`：仅仅持有该权限本身就是官方豁免~~**
+   **★ 订正（见 H75）**：这一条**实测被推翻** —— 只授予悬浮窗权限时系统仍然
+   `Background started FGS: Disallowed`，豁免看的是"应用**有可见窗口**"。
+   已撤掉该权限声明、界面入口与诊断字段。（原表述保留在此仅为留下审查轨迹）
+   原文如下：**仅仅持有**该权限本身就是官方豁免
+   （`REASON_SYSTEM_ALERT_WINDOW_PERMISSION = 62`），**不需要**真的画悬浮窗 ——
+   本项目明确**不做** 1px 悬浮窗那类灰色手段，只把豁免拿到手（授不授由用户决定）。
+7. **root 档"代启动"**：被系统拒绝时用 `su -c am start-foreground-service` 由 uid 0 代启动
+   （AOSP 里只有 root/system 对后台启动限制与组件导出检查无条件放行）。Shizuku（uid 2000）做不到：
+   我们的服务是 `exported=false`，shell 会被导出检查挡住 —— 而为了保活把服务改成 exported
+   会让任何应用都能反复拉起它，不做。
+8. **明确不做**（代理 C 的"不建议"清单，逐条采纳）：`setAlarmClock` 做心跳（状态栏会出现系统闹钟、
+   滥用闹钟语义）、1px 悬浮窗、双进程互拉（同 uid 同生共死）、滥用前台服务类型、
+   全局关 App Standby、`LOCKED_BOOT_COMPLETED`、把服务改成 `exported=true`。
+
+#### ⑤ 实测（本轮新增）
+
+- **待机桶尺度**（我原先的常量写错了，代理 B 的怀疑促成复测）：实测
+  `am get-standby-bucket <包名>` 读回 **5**，而同一时刻整表 dump 对同一应用读回 **10**；
+  **移出 Doze 白名单后单包名仍读回 5**（所以 5 不是"白名单态 EXEMPTED"）。
+  结论：该 CLI 有**两套常量尺度**且无法从输出判断用的是哪套 —— 于是**不再硬报名字**，
+  只报"5/10 属于不会被按不常用降级的档位"，并在注释、界面文案与单测里都写清这一点。
+  （原先的写法在最坏情况下会把 WORKING_SET 说成 ACTIVE。）
+- **`am kill` 后的自愈**：见下方「本轮实测结果」一节。
+- 全量构建：`assembleDebug` + `compileDebugAndroidTestKotlin` + `assembleDebugAndroidTest` 通过；
+  单测 **35 套件 / 328 用例 / 0 失败**。
+
+#### ⑥ 本轮实测结果（心跳自愈与"被杀后能否真的跑起来"）
+
+在 Android 15 模拟器上用 `am kill`（软杀，模拟被 LMK 回收；**区别于 force-stop** —— 后者会连闹钟
+一起清掉，那种情况无解，文档里已如实写明）做了**两组对照**：
+
+**A 组：未加电池优化白名单**（本轮第一次实验）
+```
+杀之前 pid=4415 → 杀之后 pid=4514（进程确实换了：被杀后由 START_STICKY 拉了回来）
++30s 时进程在，但 application_error_log 多了一条：
+10:21:53 BACKGROUND_EXECUTION_RESTRICTED
+  startForegroundService rejected: startForegroundService() not allowed due to mAllowStartForeground false: serv…
+```
+即：**进程回来了，但前台服务起不来**，监控并没有真正恢复 —— 而这次失败**被如实记进了错误日志**
+（这正是本轮给 `ensureRunning` 补的留痕，修之前这里只有一行 logcat，诊断包里查不到）。
+
+**B 组：加入 Doze 白名单**（等价于用户在卡片里点「申请忽略电池优化」）
+```
+启动后：pid=4618 服务记录=1 wakelock=True（拒绝次数=1，是上一轮那条旧的）
+am kill：pid 4618 → 4701（进程确实被杀并重启）
++20s：pid=4701 服务记录=1 wakelock=True（拒绝次数仍=1 —— **没有新的拒绝**）
+之后连续两次 Tick，lastCheckedAt 持续推进
+```
+| 条件 | 被杀之后 |
+|---|---|
+| 未加白名单 | 进程回来，但 `startForegroundService` 被系统拒绝，监控没恢复（有错误日志为证） |
+| 加入白名单 | 20 秒内恢复：服务在跑、wakelock 持有、无任何新的拒绝，Tick 继续推进 |
+
+这就是本轮把「忽略电池优化」放在卡片最顶部、并在文案里写明"建议先做这两项"的原因：
+它是**免 root 就能拿到**的那条官方豁免（`REASON_ALLOWLISTED_PACKAGE = 65`），
+同时解决"关屏 3 分钟被 app idle 停服务"与"被杀之后起不来前台服务"这两个实测到的杀手。
+
+**额外确认到的一条**（本轮实测）：把应用加入「忽略电池优化」白名单之后，
+`AlarmManager.canScheduleExactAlarms()` 从 false 变成了 **true** —— logcat 实证：
+`KeepAliveHeartbeat: 心跳不在排程中，补排一次` → `心跳已安排：15 分钟后（精确=true）`。
+这印证了 AOSP javadoc 的那句"位于设备 power-save exemption list 上的应用也可以排精确闹钟"，
+也就意味着**用户点一下「忽略电池优化」，心跳同时拿到了「即使应用在后台也允许启动前台服务」
+这条最强保证**，不必再单独去授「闹钟和提醒」权限 —— 两个入口合成了一个，界面上也据此写了说明。
+
+**未能验证的部分（如实记录）**：
+- 精确闹钟路径（`setExactAndAllowWhileIdle` 那条"后台也允许启动前台服务"的保证）没有单独验证：
+  模拟器上 `canScheduleExactAlarms()` 为 false（未授予该权限），心跳实际走的是不精确的
+  `setAndAllowWhileIdle`。要验证精确路径需要在真机「闹钟和提醒」里授权后重测。
+- Shizuku 档与 root 档仍无法在模拟器跑通（`/system/xbin/su` 只允许 root/shell 组；未装 Shizuku），
+  因此本轮新增的"幂等重放""root 代启动""Shizuku uid=0 也能做 oom 保护"都只做了编译与逻辑验证。
+- `SYSTEM_ALERT_WINDOW` / `SCHEDULE_EXACT_ALARM` 的**授权后效果**（豁免是否真的生效）需要在真机上确认；
+  本轮只验证了：声明后不再有清单/权限类编译或合并错误，缺权限时功能照常退化而不是静默失败。
+
+---
+
+---
+
+### H72. 高级保活（Root / Shizuku）：让锁屏后也能一直活跃
+
+#### ① 用户诉求
+
+「加两个高级保活功能，就是利用 shizuku 和 root 来保活。要做到锁屏之后也能一直活跃的状态。」
+
+#### ② 技术判断（这一节决定了整个实现方向）
+
+**前台服务 ≠ CPU 不睡。** 这是本次最关键的一条认知：FGS 只保证进程不被回收，
+**不阻止 CPU 挂起** —— 屏幕一关，设备进 suspend/Doze，`delay()` 之后的下一轮 Tick
+要等到下次唤醒才继续，表现就是"锁屏后不再检查"。要做到"锁屏后一直活跃"，需要**两件事同时成立**：
+
+1. **让 CPU 不睡**：持有 partial wakelock（零权限，任何应用都能申请）；
+2. **让系统在 Doze 里也认它**：Doze 白名单 + 待机桶 ACTIVE + 后台 appops 放行 ——
+   这三件都是 **shell(adb) 级**操作，普通应用做不到，**正是 Shizuku / root 能提供的**。
+
+所以"两个高级保活功能"落地成：
+- **Shizuku 档**：借 shell 身份做第 2 件事（无需 root）；
+- **Root 档**：第 2 件事 + **额外**把本进程的 `oom_score_adj` 压到 -1000（低内存杀手不再回收它）——
+  这一项 Shizuku 做不到（shell 没有 CAP_SYS_RESOURCE，改不了别的进程的 oom_score_adj）。
+
+#### ③ 实现了什么
+
+**A. wakelock（真正让轮询继续的那一环）**
+1. `MonitoringService` 在实时模式的循环里持有 `PARTIAL_WAKE_LOCK`（tag `Kaoru:monitor`）：
+   `setReferenceCounted(false)`（成对失败也不会把锁永远留住）、`finally` 释放、`onDestroy` 兜底释放。
+2. **每轮同步**（实机验证暴露的问题）：只在循环开头取一次的话，用户中途拨开开关要等下一轮
+   （间隔最长 3600 秒）才可能生效 —— 等于"开了没反应"；反过来关掉也要及时释放。
+3. 新增服务 action `ACTION_SYNC_KEEP_ALIVE`：设置页拨开关时立刻同步，不必等下一轮；
+   这个 action **不代表要开始监控** —— 循环没在跑就同步完撤掉（不为同步一个锁把服务拉起来空转）。
+4. 读设置失败**保持现状**而不是当成"用户关了"：否则一次瞬时读失败就会把锁悄悄放掉，
+   而用户看到的是"开关开着、锁屏后却还是停了"。
+
+**B. 提权通道（`data/privilege/`）**
+5. `PrivilegedShell` 抽象 + 两个实现：
+   - `RootShell`：`su -c <命令>`，**依次尝试** `su`（PATH）与 7 个历史路径
+     （Magisk 24+ 在 `/debug_ramdisk/su`，旧版在 `/sbin/su` 等）；带超时（首次会弹 root 授权框）；
+     区分"没有 su"与"有 su 但授权被拒"（后者不再试下一个路径，如实回报）。
+   - `ShizukuShell`：`Shizuku.getBinder()` → `IShizukuService.newProcess("sh","-c",cmd)`
+     → `IRemoteProcess` 读 stdout/stderr/waitFor/destroy；带版本闸门（< 11 拒绝）；
+     用 `Shizuku.pingBinder()/checkSelfPermission()/requestPermission()` 做可用性判断。
+     不走 `bindUserService`：只需要跑几条一次性命令，直接用 binder 更轻（代价是与
+     `IShizukuService` 接口耦合，所以加了版本闸门）。
+6. 清单新增 `<queries><package android:name="moe.shizuku.privileged.api"/></queries>` ——
+   API 30+ 不声明就"看不见" Shizuku，检测会永远是"未安装"且没有任何报错。
+7. 依赖新增 `dev.rikka.shizuku:api:13.1.5` + `:provider:13.1.5`（Maven Central）。
+
+**C. 仓库与策略（`AdvancedKeepAliveRepository`）**
+8. 两个开关存 DataStore（纯偏好，与项目既有取舍一致：不为偏好动 schema/迁移）：
+   `wakelockEnabled` 与 `privilegeLevel`（NONE / SHIZUKU / ROOT）。
+9. `apply(mode)` / `revert(mode)` / `probeStatus(mode)`：**每条命令之后都实测校验**，
+   而不是"命令返回 0 就当生效"（这正是本仓库一贯的纪律）。四项：Doze 白名单、待机桶、
+   后台 appops（3 个 op）、内存回收保护（仅 root 档，其余标 UNSUPPORTED 而不是假装成功）。
+10. 每次应用/回退都往 `application_error_log` 写一条**逐项状态**记录（含命令明细），
+    这样"到底哪一项没生效"在诊断包里能查到。
+
+**D. UI（设置页新卡片「高级保活（Root / Shizuku）」）**
+11. 顶部先讲清原理（两步配合），再给：锁屏继续活跃开关（附耗电警告）、环境状态
+    （Root 未检测/可用/不可用+原因；Shizuku 未安装/未运行/未授权/已授权+版本）、
+    检测环境、申请 Shizuku 授权、用 Root/Shizuku 应用（不可用时按钮**置灰**）、
+    查看当前生效状态、撤销；下面是逐项结果与可展开的命令明细。
+12. UI 里的开关状态与"检到没"分开呈现：**开着但没拿到锁**、**提权了但没开 wakelock**
+    都会明确写出来（后者正是"提权只负责别让系统拦，CPU 还得靠 wakelock 才不睡"）。
+
+**E. 诊断包**
+13. `health_snapshot.json` 新增：`keepAliveWakelockEnabled`（用户设置）、
+    `keepAliveWakelockHeld`（**此刻是否真的持有**）、`keepAlivePrivilegeLevel`、
+    `keepAliveRootEverWorked`（只报"上次 su 成功过"的缓存，**导出时不现查** ——
+    导出诊断包时弹 root 授权框是荒谬的）、Shizuku 是否运行/已授权。
+
+#### ④ 实测中发现并修掉的 5 个问题（本轮最有价值的部分）
+
+1. **待机桶有两套数值**：`am get-standby-bucket <包名>` 打印的是 `AppStandbyController`
+   的**内部**常量（ACTIVE = **5**），而不带包名的整表 dump 用的是 `UsageStatsManager`
+   的**公开**常量（ACTIVE = 10）。按公开常量写判定，会把"已生效"读成"没生效"。
+   现两套都认，并在注释里写明缘由。
+2. **白名单输出是三元组**：实测每行 `system-excidle,<包名>,<uid>`。
+   原先"把所有 token 收进集合"的写法会把 uid 与类型串也当成包名 ——
+   单测先失败（`assertFalse("10153" in set)`）才改成按列取中间段。
+3. **appops 的默认态输出是两行**：没有显式设置时是 `No operations.` + `Default mode: allow`。
+   解析必须能从这种形态读出 allow，否则"系统默认就放行"会被误判成"没放行"。
+4. **wakelock 的生效时机**（见 A-2/A-3）：只在循环开头取锁，中途拨开关等于没反应。
+5. **读设置失败被当成"用户关了开关"**：会悄悄放锁。改成"保持现状 + 留 logcat 痕迹"。
+
+以上 1~3 全部用**从模拟器上真实抓下来的输出**固化成单测（`KeepAliveCommandsTest`），
+而不是照着 API 文档猜格式。
+
+#### ⑤ 实机验证（emulator-5554，带对照）
+
+- **wakelock 真的拿到了**：`dumpsys power` →
+  `PARTIAL_WAKE_LOCK 'Kaoru:monitor' ACQ=-9s550ms (uid=10153 …)`；
+  logcat → `MonitoringService: 已持有 partial wakelock（锁屏继续轮询）`；
+  suspend-blocker 历史里有对应的 `ACQ Kaoru:monitor (partial)`。
+- **关屏后确实还在轮询**（这是用户诉求的核心）：
+  - 亮屏对照：100 秒内 `streamer.lastCheckedAt` 推进 = True（循环正常）；
+  - 关屏 150 秒：`mWakefulness=Asleep` 期间 `lastCheckedAt` **继续推进**，
+    且进程 pid 全程未变（结论有效）。
+- **同时实测到系统真正的限制**（附带发现，已写进报告）：
+  关屏进后台约 3 分钟后，`ActivityManager` 打出
+  `Stopping service due to app idle: u0a153 -3m9s564ms com.example.bilimonitor/.background.MonitoringService`，
+  前台服务被停、wakelock 被释放、监控停摆 —— **这正是白名单/待机桶/appops 要解决的问题**，
+  也解释了为什么"只加 wakelock 不够"。
+- **白名单确实能挡住"应用空闲"停服务**（直接验证了 root/Shizuku 档那一步的价值）：
+  在同一台设备上、同样关屏 5 分钟：
+  - **不加白名单**的那次：系统在约 3 分 10 秒时以 `app idle` 停掉前台服务（上面的日志），
+    Tick 停止推进；
+  - **加入 Doze 白名单**后重跑：服务**存活满 300 秒**，全程 `wakelock=True`，
+    `lastCheckedAt` **每 60 秒推进一次**（+30/60/120/180/240/300 各采样一次，pid 未变）。
+  这是本次唯一一次"提权那一档到底有没有用"的正面证据 —— 用的是 adb（等价于提权通道能做的操作），
+  而**不是**应用自己通过 root/Shizuku 做的（原因见下）。
+- **未能验证的部分（如实记录）**：
+  - **root 档**：模拟器的 `/system/xbin/su` 是 `-rwsr-x--- root:shell`，只允许 root/shell 组执行，
+    应用（uid 10xxx）无法调用 → 提权链路无法在本机跑通。真机需要 Magisk/KernelSU/APatch。
+  - **Shizuku 档**：模拟器未安装 Shizuku，且 Shizuku 的授权只能由它自己的界面授予，
+    无法自动化 → 只验证了"未安装"时的如实提示与按钮置灰。
+  - 因此**应用侧走 root/Shizuku 通道的那段代码没有在本机执行过**；本机验证到的是
+    "这些命令本身在 Android 15 上确实可用"（我用 adb 以 shell/root 身份逐条跑过，exit=0，
+    并能读回设置结果），以及"白名单带来的效果是真的"。
+  - 另有一次 A/B 对照（无白名单 vs 有白名单、各关屏 5 分钟）中的 A 段因环境因素
+    （启动瞬间屏幕处于关闭状态，前台服务无法从后台启动）而**没有跑起来**，
+    该段结果不作为对照证据 —— 上面那条"约 3 分钟被 app idle 停掉"的日志来自另一次真实运行。
+
+#### ⑥ 验证与回归
+
+- **编译**：`assembleDebug` `BUILD SUCCESSFUL`。
+- **单测**：**35 套件 / 328 用例 / 0 失败**（新增 `KeepAliveCommandsTest` 10 例，
+  全部基于模拟器实测输出；其中 1 例先失败、暴露了白名单解析的真实缺陷）。
+- **两棵树**：本轮新增 6 个文件 + 改动 9 个文件，同步到 `publish/app/src` 后逐字节一致。
+- **编码纪律**：新增文件为 无 BOM + CRLF；`DiagnosticExporter.kt`（BOM + 混合行尾）
+  用**按行插入**的方式改动，原有 2 行 CRLF 与其余 LF 一个字节没动（事后逐项核对）。
+
+#### ⑦ 边界（写进 UI，也写进 README）
+
+- 这些命令都是**系统级**设置，能显著提高存活率，但**不保证绝对不被杀**：
+  厂商 ROM（小米/华为/OPPO/vivo 等）有自家的省电与后台清理策略，这些命令管不到 ——
+  用户还需要在系统的「电池 / 后台管理」里把应用设为「无限制 / 允许后台运行」。
+- 加入 Doze 白名单会让待机耗电略有增加；wakelock 只在实时模式的前台服务里持有，
+  退出服务立即释放。
+- root 档会把本进程 `oom_score_adj` 压到 -1000（低内存时不被回收）；
+  这是按进程生效的，进程重启后由服务启动时补设（失败会写错误日志，不会静默）。
+
+---
+
+---
+
 ### H71. 通知线取舍项落地（10 项全部按建议实现）
 
 #### ① 用户诉求

@@ -35,8 +35,30 @@ class MonitoringService : LifecycleService() {
     @Inject lateinit var logDao: com.example.bilimonitor.data.local.dao.LogDao
     @Inject lateinit var notificationSettingsRepository:
         com.example.bilimonitor.data.repository.NotificationSettingsRepository
+    @Inject lateinit var advancedKeepAlive: com.example.bilimonitor.data.repository.AdvancedKeepAliveRepository
+    /** 心跳：`onTaskRemoved` 时确保它排着（进程若被厂商清掉，只能靠它回来）。 */
+    @Inject lateinit var keepAliveHeartbeat: KeepAliveHeartbeat
+    /**
+     * 应用级协程作用域：**必须用它**写"服务即将结束时的错误日志"。
+     *
+     * `lifecycleScope` 会随 `stopSelf()` → `onDestroy` 一起取消，日志还没落库就被取消掉了 ——
+     * 而那正是最需要留下原因的路径（前台启动被拒、取锁失败）。
+     */
+    @Inject @javax.inject.Named("appScope") lateinit var appScope: kotlinx.coroutines.CoroutineScope
 
     private var loopJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 当前持有的 partial wakelock。
+     *
+     * 用**实例字段**而不是循环内的局部变量：`onDestroy` 也要能兜底释放 ——
+     * 循环的 `finally` 正常情况下会释放，但服务被强杀/异常路径下多一层保险更划算。
+     * 拿不到锁（系统拒绝）时保持 null，绝不假装持有。
+     */
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+
+    /** 通知模板读失败是否已记过一条（避免每轮 Tick 刷屏）。 */
+    private var templateReadFailureLogged = false
 
     /** 通知模板缓存：`onStartCommand` 有 5 秒时限，不能在那里挂起读 DataStore。 */
     @Volatile
@@ -78,6 +100,24 @@ class MonitoringService : LifecycleService() {
             }
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_SYNC_KEEP_ALIVE) {
+            // 设置页刚拨了「锁屏继续活跃」：立刻同步，不必等下一轮 Tick。
+            // ★ 这个 action **不代表要开始监控**：循环没在跑就同步完撤掉，
+            //   不能因为"同步一个锁"把前台服务拉起来空转。
+            lifecycleScope.launch {
+                syncWakeLock()
+                if (loopJob?.isActive != true) {
+                    releaseWakeLock("服务并未在监控")
+                    isRunning.value = false
+                    stopSelf()
+                }
+            }
+            // ★ 返回 START_STICKY 而不是 NOT_STICKY（代理审查提示）：服务本来就在跑，
+            //   而这个返回值会成为该服务"最近一次"的粘性声明；返回 NOT_STICKY 会把
+            //   运行中监控服务的重启语义一起改掉 —— 为同步一个锁而降低保活等级不划算。
+            //   真要停服务时下面会 stopSelf()，停掉的服务不会被粘性重启。
+            return START_STICKY
+        }
         if (intent?.action == ACTION_REFRESH_NOTIFICATION) {
             // 用户在设置里改了通知内容（或点了恢复默认）：重读模板并重发通知。
             // 重发而不是"先停后起"——前台服务必须保持前台，中间不能有空档。
@@ -105,9 +145,21 @@ class MonitoringService : LifecycleService() {
             }
             return START_STICKY
         }
-        startInForeground()
+        // 前台启动失败时**不要**再启动循环（代理审查发现）：
+        // 否则服务已在停止中，却还要跑一轮 Tick —— 一半的请求与可能写了一半的批次，
+        // 状态上还自相矛盾（isRunning=false 却有 Tick 在跑）。
+        if (!startInForeground()) return START_NOT_STICKY
         if (loopJob == null || loopJob?.isActive != true) {
             loopJob = lifecycleScope.launch { runLoop() }
+        }
+        // ★ 服务每次启动都把提权设置重放并校验一次（幂等，代理调研）：
+        //   待机桶会被系统重新分级、白名单可能被用户撤销、appops 重装后回默认，
+        //   而 oom_score_adj 更是**按进程**生效的（进程一换就没了）。
+        //   掉哪项补哪项；全部走读回校验，不会"以为设了其实没设"。
+        //   （NONE 档与通道不可用都会直接返回；失败会写错误日志，不会静默）
+        appScope.launch {
+            runCatching { advancedKeepAlive.reapplyIfNeeded() }
+                .onFailure { android.util.Log.w(TAG, "提权设置重放失败：${it.message}") }
         }
         return START_STICKY
     }
@@ -115,7 +167,13 @@ class MonitoringService : LifecycleService() {
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
     private suspend fun runLoop() {
+        // ★ 锁屏继续活跃（用户要求的高级保活）：前台服务只保证进程不被回收，**不阻止 CPU 挂起** ——
+        //   屏幕一关，设备进入 suspend/Doze，`delay()` 之后的下一轮 Tick 要等到下次唤醒才继续，
+        //   表现就是"锁屏后不再检查"。partial wakelock 才是让 CPU 不睡的那一环（零权限）。
+        //   注意它单独用是不够的：Doze 期间系统会忽略非白名单应用的 wakelock 与网络，
+        //   所以还要在「高级保活」里用 Root/Shizuku 把它加入 Doze 白名单。
         var consecutiveFailures = 0
+        try {
         while (currentCoroutineContext().isActive) {
             // ★ 循环体整体要有异常边界（台账 H19-A1）：
             //   `getSnapshot()` 是可抛的（Room 调用 + quietHoursRepository.current() 按设计
@@ -130,6 +188,16 @@ class MonitoringService : LifecycleService() {
                 val snapshot = configRepository.getSnapshot()
                 if (snapshot?.monitoringEnabled != true || snapshot.mode != MonitoringMode.REALTIME) {
                     break
+                }
+                // ★ 每轮同步 wakelock（实机验证暴露的问题）：只在循环开头取一次的话，
+                //   用户中途拨开「锁屏继续活跃」要等下一轮才可能生效 —— 间隔最长 3600 秒，
+                //   等于"开了没反应"；反过来关掉开关也要及时释放，不能一直耗电。
+                syncWakeLock()
+                // ★ 顺带校验心跳链还活着（代理调研：撤销精确闹钟权限、ROM 清理都会删掉闹钟，
+                //   而链一断，进程再被杀就没人拉得起来）。这里是内存级判断，几乎无成本。
+                if (!keepAliveHeartbeat.isScheduled()) {
+                    android.util.Log.w(TAG, "发现心跳不在排程中，补排")
+                    keepAliveHeartbeat.ensureScheduled()
                 }
                 // ★ 引擎异常必须**穿透到下面的失败分支**，绝不在这里吞（缺陷：前台服务静默吞掉引擎异常）。
                 //   `checkOnce` 只自吞 TimeoutCancellationException（见 MonitoringEngine），其余异常
@@ -178,10 +246,103 @@ class MonitoringService : LifecycleService() {
                 runCatching { delay(30_000L) }
             }
         }
+        } finally {
+            // 不论正常退出、取消还是异常，都必须释放：漏掉一个 wakelock 会一直耗电，
+            // 而且是用户看不见的那种耗电。
+            releaseWakeLock("循环结束")
+        }
         stopSelf()
     }
 
-    private fun startInForeground() {
+    /**
+     * 让 wakelock 与用户开关保持一致（幂等，每轮 Tick 与设置变更时各调一次）。
+     *
+     * 两个方向都要处理：开着但没锁 → 取；关了但还持有 → 释放。
+     * 少任何一个方向都会留下"开了没用"或"关了还在耗电"的坑。
+     */
+    private suspend fun syncWakeLock() {
+        val settings = runCatching { advancedKeepAlive.current() }.getOrElse { e ->
+            // ★ 读不出来**不能**当成「用户关了开关」：那会在一次瞬时读失败时把锁悄悄放掉，
+            //   而用户看到的是"开关开着、锁屏后却还是停了"。
+            //   仓库的降级原则是「读不到就当不知道」，这里对应"保持现状"，并留一条可查的痕迹。
+            android.util.Log.w(TAG, "读取高级保活开关失败，保持当前 wakelock 状态：${e.message}")
+            return
+        }
+        // ★ 设置值在这里**先读好**，再进下面那段临界区（代理审查发现的丢锁竞态）：
+        //   原先 `acquireWakeLockIfEnabled` 内部又读了一次 DataStore —— 那是**挂起点**，
+        //   于是"检查 wakeLock 是否已持有"与"给字段赋值"之间可以被另一个协程插进来
+        //   （本循环每轮的 syncWakeLock 与设置页 ACTION_SYNC_KEEP_ALIVE 触发的 syncWakeLock）。
+        //   两者会各建一把锁、后写的覆盖字段，第一把锁从此失去引用却仍然持有：
+        //   进程活多久就耗多久电（PARTIAL_WAKE_LOCK 没有超时），而且界面上完全看不出来。
+        //   现在临界区内没有任何挂起点 → 主线程单线程执行，交错不可能发生。
+        applyWakeLockDesired(settings.wakelockEnabled)
+    }
+
+    /**
+     * 按期望状态调整 wakelock —— **非挂起**，检查/取锁/赋值一气呵成。
+     *
+     * `setReferenceCounted(false)` 只保证"同一把锁重复 acquire/release 安全"，
+     * 挡不住"建了两把锁、只留一个引用"这种丢引用（那是耗电且不可见的）。
+     */
+    private fun applyWakeLockDesired(enabled: Boolean) {
+        if (!enabled) {
+            if (wakeLock != null) releaseWakeLock("用户关闭了开关")
+            return
+        }
+        if (wakeLock?.isHeld == true) return
+        val result = runCatching {
+            val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+            pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+        val lock = result.getOrNull()
+        wakeLock = lock
+        // 对外暴露**实际**状态（与 isRunning 同一套做法）：界面与诊断包要能区分
+        // "用户开了这个开关"与"锁真的拿到了"。
+        isWakelockHeld.value = lock != null
+        if (lock != null) {
+            android.util.Log.i(TAG, "已持有 partial wakelock（锁屏继续轮询）")
+        } else {
+            val e = result.exceptionOrNull()
+            android.util.Log.e(TAG, "获取 partial wakelock 失败：${e?.message}", e)
+            // 拿不到锁要如实留痕：否则界面上开着"锁屏继续活跃"、实际根本没生效。
+            // 用 appScope 而不是 lifecycleScope：服务随时可能被停，日志不能跟着一起没。
+            appScope.launch {
+                runCatching {
+                    logDao.insertAppError(
+                        com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                            errorId = com.example.bilimonitor.core.Ids.newId(),
+                            operationId = null, occurredAt = System.currentTimeMillis(),
+                            errorCode = com.example.bilimonitor.data.local.AppError.BACKGROUND_EXECUTION_RESTRICTED,
+                            detail = "获取 partial wakelock 失败（锁屏后将不再轮询）：${e?.message}".take(500)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /** 释放 wakelock（幂等；未持有时是空操作）。 */
+    private fun releaseWakeLock(reason: String) {
+        val lock = wakeLock ?: return
+        wakeLock = null
+        runCatching {
+            if (lock.isHeld) {
+                lock.release()
+                android.util.Log.i(TAG, "已释放 partial wakelock（$reason）")
+            }
+        }
+        isWakelockHeld.value = false
+    }
+
+    /**
+     * 进入前台并挂上常驻通知。
+     *
+     * @return true = 真的进了前台；false = 被系统拒绝（此时已停止服务，调用方**不要**再启动监控循环）
+     */
+    private fun startInForeground(): Boolean {
         val notification = buildNotification()
         // FOREGROUND_SERVICE_TYPE_SPECIAL_USE 是 API 34 才引入的类型位；
         // API 31–33 上传该值会被系统拒绝，因此低版本传 0（表示未声明类型）。
@@ -196,12 +357,31 @@ class MonitoringService : LifecycleService() {
             ServiceCompat.startForeground(this, SERVICE_NOTIFICATION_ID, notification, fgsType)
             // 真进了前台才算"在跑"（与 onCreate 不再置真相呼应）
             isRunning.value = true
+            return true
         } catch (e: Exception) {
             // 系统仍可能拒绝前台启动（权限被收回、后台启动限制、厂商 ROM 策略）：
-            // 不得崩溃，静默停止服务；下次打开 App 或开机时会再次尝试。
-            // 降级不会静默——HealthRepository 会发现 serviceRunning=false 并如实显示。
+            // 不得崩溃，停止服务；下次打开 App、开机、或保活心跳时会再次尝试。
+            // ★ 但**必须留痕**（代理审查发现）：原先这里只置 false + stopSelf，连异常对象都没用，
+            //   于是"实时监控为什么没起来"在诊断包里查不到任何原因（HealthRepository 只能显示
+            //   serviceRunning=false 这个**结果**，说不出**原因**）—— 与"任何降级不允许静默发生"冲突。
             isRunning.value = false
+            android.util.Log.e(TAG, "前台启动被系统拒绝，监控无法运行：${e.message}", e)
+            appScope.launch {
+                runCatching {
+                    logDao.insertAppError(
+                        com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                            errorId = com.example.bilimonitor.core.Ids.newId(),
+                            operationId = null, occurredAt = System.currentTimeMillis(),
+                            errorCode = com.example.bilimonitor.data.local.AppError.BACKGROUND_EXECUTION_RESTRICTED,
+                            detail = ("前台服务启动被拒绝（${e.javaClass.simpleName}）：${e.message}。" +
+                                "常见原因：未加入电池优化白名单、通知权限被收回、厂商后台限制。" +
+                                "可在设置页「高级保活」里申请「忽略电池优化」。").take(500)
+                        )
+                    )
+                }
+            }
             stopSelf()
+            return false
         }
     }
 
@@ -254,10 +434,31 @@ class MonitoringService : LifecycleService() {
             com.example.bilimonitor.data.repository.NotificationTemplate.render(template.text, monitored, live)
     }
 
-    /** 从 DataStore 刷新模板缓存（协程内调用；失败保留上一次的值）。 */
+    /**
+     * 从 DataStore 刷新模板缓存（协程内调用；失败保留上一次的值）。
+     *
+     * 失败**必须留痕**（代理审查发现原先完全静默）：否则用户改了通知文案、常驻通知却一直不更新，
+     * 诊断包里查不到任何原因。用一次性标志避免每轮 Tick 都写一条（读失败通常不会自愈）。
+     */
     private suspend fun refreshNotificationContent() {
         runCatching { notificationSettingsRepository.current() }
             .onSuccess { cachedTemplate = it }
+            .onFailure { e ->
+                android.util.Log.w(TAG, "读取通知模板失败，沿用上一次的值：${e.message}")
+                if (!templateReadFailureLogged) {
+                    templateReadFailureLogged = true
+                    runCatching {
+                        logDao.insertAppError(
+                            com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                                errorId = com.example.bilimonitor.core.Ids.newId(),
+                                operationId = null, occurredAt = System.currentTimeMillis(),
+                                errorCode = com.example.bilimonitor.data.local.AppError.UNKNOWN,
+                                detail = "读取通知模板失败（常驻通知将沿用上一次的文案）：${e.message}".take(500)
+                            )
+                        )
+                    }
+                }
+            }
     }
 
     /**
@@ -274,8 +475,37 @@ class MonitoringService : LifecycleService() {
             .onFailure { android.util.Log.w("MonitoringService", "刷新常驻通知失败：${it.message}") }
     }
 
+    /**
+     * 用户从「最近任务」把应用划掉。
+     *
+     * 本项目 `stopWithTask` 保持默认（false），所以服务不会被这一下停掉；
+     * 但**厂商 ROM 常见做法是顺手清掉进程**，那时只能靠心跳闹钟把它拉回来
+     * （见 KeepAliveHeartbeatReceiver）。这里做两件事：留一条痕（用户/诊断能看出发生过什么），
+     * 以及确保心跳是排着的 —— 「划掉之后监控就悄悄没了」是绝不能接受的静默降级。
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        android.util.Log.i(TAG, "应用从最近任务被划掉；监控服务保持运行，心跳确保已排程")
+        lifecycleScope.launch {
+            runCatching {
+                logDao.insertAudit(
+                    com.example.bilimonitor.data.local.entity.AuditLogEntity(
+                        auditId = com.example.bilimonitor.core.Ids.newId(),
+                        operationId = com.example.bilimonitor.core.Ids.newId(),
+                        actor = "USER", action = "APP_TASK_REMOVED", targetType = "app",
+                        targetStableId = packageName, occurredAt = System.currentTimeMillis(),
+                        detailJson = "{\"monitoringRunning\":${isRunning.value}}"
+                    )
+                )
+            }
+            runCatching { keepAliveHeartbeat.schedule() }
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         isRunning.value = false
+        // 兜底：循环的 finally 正常会释放，但服务被杀/异常退出时不能指望它
+        releaseWakeLock("服务销毁")
         loopJob?.cancel()
         // ★ 主动释放监控租约（台账 H19-A12）：租约原先从不主动释放，只能等 90 秒 TTL 过期回收，
         //   于是"停止后 90 秒内又启动"（快速重启/安装更新/START_STICKY 被系统拉起）时，
@@ -310,8 +540,24 @@ class MonitoringService : LifecycleService() {
         /** 设置里改了通知内容后，用它让常驻通知立即刷新（见 onStartCommand 的处理）。 */
         const val ACTION_REFRESH_NOTIFICATION = "com.example.bilimonitor.action.REFRESH_MONITORING_NOTIFICATION"
 
+        /** 设置里改了「锁屏继续活跃」后，用它让 wakelock 立刻跟上（不必等下一轮 Tick）。 */
+        const val ACTION_SYNC_KEEP_ALIVE = "com.example.bilimonitor.action.SYNC_KEEP_ALIVE"
+
         /** 前台循环连续失败到该次数就停止服务，避免"显示监控中、实际零检查"的假活。 */
         const val MAX_CONSECUTIVE_LOOP_FAILURES = 5
+
+        /** wakelock 标签：在 `dumpsys power` 里能一眼认出是哪个应用持有的。 */
+        const val WAKE_LOCK_TAG = "Kaoru:monitor"
+
+        /** 日志 tag（新增的 wakelock/保活日志统一用它，便于 `adb logcat -s MonitoringService` 抓）。 */
+        const val TAG = "MonitoringService"
+
+        /**
+         * 此刻是否**真的**持有 partial wakelock（不是"用户开了开关"）。
+         *
+         * 诊断包与界面都读它：开着开关但锁没拿到（系统拒绝等）时，必须能看出来。
+         */
+        val isWakelockHeld = kotlinx.coroutines.flow.MutableStateFlow(false)
 
         /** 运行态表达（0.6.47.2）：界面必须反映 FGS 是否真的在跑，而不是用户选择的意图。 */
         val isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)

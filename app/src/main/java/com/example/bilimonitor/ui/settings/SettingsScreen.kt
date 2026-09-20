@@ -1,4 +1,4 @@
-﻿package com.example.bilimonitor.ui.settings
+package com.example.bilimonitor.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -67,6 +67,13 @@ fun SettingsScreen(
     val template by viewModel.notificationTemplate.collectAsStateWithLifecycle()
     // 数据过期提示开关（DataStore 展示偏好，默认开）：与 config 不同源，单独收一条流。
     val freshnessExpiryHintEnabled by viewModel.freshnessExpiryHintEnabled.collectAsStateWithLifecycle()
+    // 高级保活（Root / Shizuku）
+    val advancedKeepAlive by viewModel.advancedKeepAlive.collectAsStateWithLifecycle()
+    val privilegeEnv by viewModel.privilegeEnv.collectAsStateWithLifecycle()
+    val keepAliveReport by viewModel.keepAliveReport.collectAsStateWithLifecycle()
+    val keepAliveBusy by viewModel.keepAliveBusy.collectAsStateWithLifecycle()
+    val powerExemption by viewModel.powerExemption.collectAsStateWithLifecycle()
+    val wakelockHeld by viewModel.wakelockHeld.collectAsStateWithLifecycle()
     var showKeepAliveDialog by remember { mutableStateOf(false) }
     // 通知权限是**系统状态**，不是 Compose 状态：在组合期直接调 checkSelfPermission 的话，
     // 用户去系统设置里授权/撤销后回到本页，读到的仍是进入页面那一刻的值 —— 页面也不会重组，
@@ -74,6 +81,9 @@ fun SettingsScreen(
     var notificationsEnabled by remember { mutableStateOf(viewModel.notificationsEnabled()) }
     LifecycleResumeEffect(Unit) {
         notificationsEnabled = viewModel.notificationsEnabled()
+        // 电池优化白名单/悬浮窗都是**系统状态**：从系统对话框返回时必须重读，
+        // 否则界面会一直显示"未加入"，用户以为申请没生效又反复点。
+        viewModel.refreshPowerExemption()
         onPauseOrDispose { }
     }
 
@@ -170,7 +180,10 @@ fun SettingsScreen(
                     Column(Modifier.weight(1f)) {
                         Text("批量开播合并通知", fontWeight = FontWeight.Medium)
                         Text(
-                            "多位主播同时开播时合并为一条通知",
+                            // 措辞要点：阈值是"超过多少位才合并"，不是"每次合并多少位" ——
+                            // 用户明确纠正过这个区别，文案不许再写成后者。
+                            "同一批（几秒内）需要通知的主播「超过」下面的阈值时，" +
+                                "把这一批「全部」合并成一条通知；不超过则逐个单独发",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -181,7 +194,9 @@ fun SettingsScreen(
                     )
                 }
                 StepperSetting(
-                    label = "合并阈值：${config?.aggregationThreshold ?: 4} 个开播事件",
+                    // 措辞与开关说明一致：阈值 = "超过多少位就合并"，不是"每次合并多少位"。
+                    label = "超过 ${config?.aggregationThreshold ?: 4} 位主播需要通知时合并" +
+                        "（当前 ${config?.aggregationThreshold ?: 4}）",
                     value = config?.aggregationThreshold ?: 4,
                     onCommit = { viewModel.update { s -> s.copy(aggregationThreshold = it) } }
                 )
@@ -298,6 +313,27 @@ fun SettingsScreen(
                     )
                 }
             }
+
+            // 高级保活（Root / Shizuku）：用户要求的两档提权保活。
+            // 放在「后台保活」之后，因为它是"在已选保活方式之上再加一层"。
+            AdvancedKeepAliveCard(
+                wakelockEnabled = advancedKeepAlive.wakelockEnabled,
+                wakelockHeld = wakelockHeld,
+                currentLevel = advancedKeepAlive.privilegeLevel,
+                power = powerExemption,
+                onRequestIgnoreBattery = { viewModel.requestIgnoreBatteryOptimizations() },
+                onOpenAutoStart = { viewModel.openAutoStartSettings() },
+                onOpenExactAlarm = { viewModel.openExactAlarmSettings() },
+                env = privilegeEnv,
+                report = keepAliveReport,
+                busy = keepAliveBusy,
+                onToggleWakelock = { viewModel.setAdvancedWakelock(it) },
+                onDetect = { viewModel.refreshPrivilegeEnvironment(true) },
+                onRequestShizuku = { viewModel.requestShizukuPermission() },
+                onApply = { viewModel.applyAdvancedKeepAlive(it) },
+                onRevert = { viewModel.revertAdvancedKeepAlive() },
+                onProbe = { viewModel.probeAdvancedStatus() }
+            )
 
             // 前台常驻通知的内容可自定义（用户要求）。
             // 只在"确实会用前台保活"时才显示这一块，避免给不用它的人增加噪声。

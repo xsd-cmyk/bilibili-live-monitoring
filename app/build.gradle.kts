@@ -17,8 +17,8 @@ android {
         applicationId = "com.example.bilimonitor"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "0622.0"
+        versionCode = 4
+        versionName = "0622.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -136,6 +136,16 @@ dependencies {
 
     implementation(libs.zxing.core)
     implementation(libs.androidx.security.crypto)
+
+    // 高级保活用的提权通道：
+    //  · api      —— 检测 Shizuku 是否在跑、申请权限、以 shell 身份执行命令
+    //  · provider —— Shizuku 的权限校验 Provider
+    //    ★ 它**不会**由清单合并自动声明：13.1.5 的 provider AAR 清单里只有权限与 meta-data，
+    //      必须在 AndroidManifest.xml 里手写 <provider android:name="rikka.shizuku.ShizukuProvider" …>，
+    //      否则 binder 永远收不到、Shizuku 档整体不可用（这一条曾写错，已修）。
+    // 两者都是可选的：Shizuku 不存在时应用照常工作，只是"高级保活"里那一档不可用。
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

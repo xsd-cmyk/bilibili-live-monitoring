@@ -17,6 +17,48 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!--
+      精确闹钟：心跳用 setExactAndAllowWhileIdle 才能在 Doze 里准点唤醒。
+      AOSP 的 javadoc 明确写着「用这个 API 排的闹钟，**即使应用在后台也允许启动前台服务**」——
+      这正是"进程被杀后自己回来"需要的那条豁免。
+      用 SCHEDULE_EXACT_ALARM（用户可授可撤）而**不是** USE_EXACT_ALARM：
+      后者是 Google Play 的受限权限，只允许核心功能是闹钟/日历的应用声明。
+      拿不到也不影响功能：代码会退化为 setAndAllowWhileIdle（不精确，但 Doze 下仍会触发）。
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!--
+      这里**刻意不声明** SYSTEM_ALERT_WINDOW（「显示在其他应用上层」）。
+      一度以为"仅持有该权限"就是"后台启动前台服务"的官方豁免（AOSP 里确有对应允许原因码
+      REASON_SYSTEM_ALERT_WINDOW_PERMISSION = 62），但**实测推翻了它** ——
+      Android 15 模拟器上用 root 触发一次真实的后台启动前台服务做 A/B：
+        · 撤销悬浮窗 + 不在电池优化白名单 → `Background started FGS: Disallowed`
+        · **只授予悬浮窗**（仍不在白名单）  → **同样 Disallowed**（没有豁免效果）
+        · 只加入电池优化白名单             → `Background started FGS: Allowed`
+      也就是说豁免看的是"应用**有可见窗口**"（真的去画悬浮窗），不是"持有权限"；
+      而为了保活画 1px 悬浮窗正是本项目明确不做的灰色手段。既然没有实测收益，
+      就不留这个敏感权限（少一个权限对用户更诚实）。详见台账 H75。
+    -->
+
+    <!--
+      「忽略电池优化」：本应用的核心功能是长期后台监控，被系统按 Doze/待机回收就等于功能失效。
+      加了它才能用 ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 弹系统授权框
+      （等价于把应用加进 Doze 白名单：Doze 期间仍可用 wakelock 与网络，
+        并且是 Android 12+ 前台服务后台启动限制的官方豁免之一）。
+      注意：Google Play 对该权限有政策限制（仅允许核心功能确需长期后台的应用使用）；
+      本应用是本地优先的监控工具，侧载分发不涉及该政策。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
+      API 30+ 的包可见性：不声明 <queries> 就"看不见" Shizuku 是否安装，
+      检测结果会永远是"未安装"（用户装了也用不了，且没有任何报错）。
+      这里只声明包名，不申请任何额外权限。
+    -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+    </queries>
+
     <application
         android:name=".BiliMonitorApp"
         android:allowBackup="true"
@@ -26,6 +68,49 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+
+        <!--
+          ★ Shizuku 必需：provider AAR **自己不声明** provider（13.1.5 的清单里只有权限与 meta-data），
+          不写这一段 binder 永远收不到 → Shizuku.pingBinder() 恒为 false →
+          「用 Shizuku 应用」这一档 100% 不可用（按钮恒置灰、还误导用户"去启动 Shizuku"）。
+          authorities 用 ${applicationId} 前缀避免与别的应用冲突；exported 必须为 true
+          （Shizuku 应用要能回调它），访问由 permission 与 Shizuku 自己的校验共同限制。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!--
+          保活心跳接收器：闹钟由 system_server 持有，**应用进程已经死了它照样触发**，
+          触发时系统会拉起本应用进程，我们在 onReceive 里把监控服务重新拉起。
+          exported=false：只接受我们自己 PendingIntent 发来的广播（外部无法伪造触发）。
+        -->
+        <receiver
+            android:name=".background.KeepAliveHeartbeatReceiver"
+            android:exported="false">
+            <!--
+              精确闹钟权限被撤销/重新授予时系统会删掉所有 setExact* 闹钟，心跳链会静默断掉 ——
+              接住这个广播立刻重排（它同时也是"允许启动前台服务"的时机）。
+              exported=false 仍能收到系统广播：AOSP 的组件权限检查对 system uid 无条件放行。
+            -->
+            <intent-filter>
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+            <!--
+              三条"零成本恢复入口"：用户改时间/时区/语言时系统会发这些广播，
+              它们在 AOSP 允许原因码里同样允许启动前台服务（204/205/206），
+              而且是 API 26+ 之后仍允许静态注册的少数隐式广播。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".MainActivity"

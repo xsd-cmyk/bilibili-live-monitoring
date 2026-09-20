@@ -16,6 +16,7 @@ import com.example.bilimonitor.data.local.dao.NotificationAggregateDao
 import com.example.bilimonitor.data.local.dao.NotificationIdRegistryDao
 import com.example.bilimonitor.data.local.dao.NotificationOutboxDao
 import com.example.bilimonitor.data.local.db.AppDatabase
+import com.example.bilimonitor.domain.policy.NotificationAggregationPolicy
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -251,7 +252,14 @@ object NotificationOutboxWriter {
             )
             return
         }
-        if (policy.aggregationEnabled && policy.aggregationThreshold > 1) {
+        // ★ 阈值是「触发合并的条件」，不是「每条通知装多少位」：只要聚合开关打开，
+        //   事件就先绑进窗口，等窗口关闭时再按"是否超过阈值"决定合并还是逐条发
+        //   （判定见 NotificationAggregationPolicy；窗口默认 5 秒）。
+        //   原先这里还要求 threshold > 1，会把"阈值 = 1（超过 1 位就合并）"静默当成不聚合。
+        val useWindow = NotificationAggregationPolicy.usesAggregationWindow(
+            policy.aggregationEnabled, policy.aggregationThreshold
+        )
+        if (useWindow) {
             bindOrCreateAggregate(db, clock, event, streamerId, payloadJson, policy, configVersion, now, eventType)
         } else {
             createSingle(
@@ -322,14 +330,19 @@ object NotificationOutboxWriter {
             return
         }
         val count = aggDao.countActiveEvents(aggregate.aggregateId)
-        if (count >= aggregate.threshold) {
-            // 达到阈值：冻结窗口 + Batch Outbox 同事务创建（0.6.10）。
-            aggDao.casStatus(aggregate.aggregateId, aggregate.status, NotificationAggregateStatus.FROZEN, null, count)
-            if (!outboxDao.existsForAggregate(aggregate.aggregateId)) {
-                createBatchOutbox(db, clock, aggregate.aggregateId, now, configVersion)
-            }
-        } else {
-            aggDao.casStatus(aggregate.aggregateId, aggregate.status, NotificationAggregateStatus.COLLECTING, null, count)
+        // ★ 这里**不再提前冻结**（用户定稿的语义变更）：
+        //   阈值是"超过多少位才值得合并"，所以窗口内先一直收集，等窗口关闭时再定案
+        //   （见 NotificationRepository.processWindowEnds → NotificationAggregationPolicy.shouldMergeAll）。
+        //   原实现在 count >= threshold 时就冻结并发批次，于是"阈值 4 + 10 位主播同时开播"
+        //   会变成 3 条通知（4＋4＋2），而不是用户要的 1 条含全部 10 位。
+        //   窗口默认只有 5 秒，"等窗口关闭"最多多等几秒。
+        //   只更新仍在收集中的窗口的计数缓存：CAS 的 from 用当前状态，避免把已经
+        //   FROZEN/DISPATCHED 的窗口"降级"回 COLLECTING（并发下 CAS 会自然落空，无副作用）。
+        if (aggregate.status == NotificationAggregateStatus.COLLECTING) {
+            aggDao.casStatus(
+                aggregate.aggregateId, aggregate.status,
+                NotificationAggregateStatus.COLLECTING, null, count
+            )
         }
     }
 

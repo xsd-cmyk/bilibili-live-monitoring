@@ -1795,10 +1795,26 @@ class MonitoringEngine @Inject constructor(
      * 服务停止/销毁时调用，可以让下一次启动的第一次 Tick 立刻就绪。
      */
     suspend fun releaseLease() {
-        val current = heldLease ?: return
-        runCatching { runtimeLockRepository.release(current) }
-            .onFailure { logAppError(AppError.DATABASE_ERROR, "释放监控租约失败：${it.message}") }
-        heldLease = null
+        // ★ 有 Tick 在飞时**不释放**（代理审查发现）：释放会清掉 fencingToken，
+        //   在飞那一轮剩余主播的观察写会被 CAS 拒绝，还会被记成"代际/fencing token 已失效" ——
+        //   **归因是错的**（真实原因是服务在停机时主动释放了租约）。
+        //   用 tryLock：拿不到就放弃。租约本来就有 TTL 会自然过期，晚一点回收没有任何副作用，
+        //   而误伤一个正在跑的 Tick 会丢掉真实观察数据。
+        if (!tickMutex.tryLock()) {
+            android.util.Log.i(
+                "MonitoringEngine",
+                "有 Tick 正在执行，跳过主动释放租约（交给 TTL 过期回收，避免误伤在飞的写入）"
+            )
+            return
+        }
+        try {
+            val current = heldLease ?: return
+            runCatching { runtimeLockRepository.release(current) }
+                .onFailure { logAppError(AppError.DATABASE_ERROR, "释放监控租约失败：${it.message}") }
+            heldLease = null
+        } finally {
+            tickMutex.unlock()
+        }
     }
 
     /**

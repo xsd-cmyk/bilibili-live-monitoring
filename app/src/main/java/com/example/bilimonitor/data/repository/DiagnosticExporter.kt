@@ -46,7 +46,13 @@ import kotlinx.coroutines.withContext
 class DiagnosticExporter @Inject constructor(
     @ApplicationContext private val context: Context,
     private val db: AppDatabase,
-    private val clock: AppClock
+    private val clock: AppClock,
+    /** 高级保活的设置与提权环境（只读；不会触发任何授权弹窗，见下方字段注释）。 */
+    private val advancedKeepAlive: com.example.bilimonitor.data.repository.AdvancedKeepAliveRepository,
+    private val rootShell: com.example.bilimonitor.data.privilege.RootShell,
+    private val shizukuShell: com.example.bilimonitor.data.privilege.ShizukuShell,
+    /** 心跳排程状态：它是进程被杀后唯一的恢复入口，"有没有排上"必须能查。 */
+    private val keepAliveHeartbeat: com.example.bilimonitor.background.KeepAliveHeartbeat
 ) {
     data class DiagnosticResult(val fileName: String, val entryCount: Int, val bytes: Int)
 
@@ -113,10 +119,34 @@ class DiagnosticExporter @Inject constructor(
             )
         })
 
+        // 高级保活的**实际**状态（而不是用户意图）：
+        //  · keepAliveWakelockHeld —— 此刻锁是否真的在手上（开关开着但没拿到锁时必须能看出来）
+        //  · keepAliveRootEverWorked —— 只报"上次 su 成功过"的缓存结果；这里**不现查**，
+        //    因为导出诊断包时弹 root 授权框是荒谬的。真正生效与否由「应用」时写进
+        //    application_errors 的那条记录承载（含逐项状态与命令明细）。
+        val keepAliveResult = runCatching { advancedKeepAlive.current() }
+        val keepAlive = keepAliveResult.getOrNull()
         entries["health_snapshot.json"] = J.obj(
             J.s("lastMonitoringHealth", lastHealth?.name),
             J.b("foregroundServiceRunning",
                 com.example.bilimonitor.background.MonitoringService.isRunning.value),
+            // ★ 读失败要如实说"读不到"，不能用 false 冒充"关着"（代理审查指出）
+            J.b("keepAliveReadFailed", keepAlive == null),
+            J.b("keepAliveWakelockEnabled", keepAlive?.wakelockEnabled ?: false),
+            J.b("keepAliveWakelockHeld",
+                com.example.bilimonitor.background.MonitoringService.isWakelockHeld.value),
+            J.s("keepAlivePrivilegeLevel", keepAlive?.privilegeLevel?.name),
+            J.b("keepAliveRootEverWorked", rootShell.isAvailable()),
+            J.b("keepAliveShizukuRunning", shizukuShell.isRunning()),
+            J.b("keepAliveShizukuAuthorized", shizukuShell.isAuthorized()),
+            // 免 root 加固：这是"能不能锁屏后活着"最直接的两个判据
+            J.b("keepAliveIgnoringBatteryOptimizations",
+                runCatching { advancedKeepAlive.powerExemption().ignoringBatteryOptimizations }
+                    .getOrDefault(false)),
+            J.b("keepAliveCanScheduleExactAlarms",
+                runCatching { advancedKeepAlive.powerExemption().canScheduleExactAlarms }
+                    .getOrDefault(false)),
+            J.b("keepAliveHeartbeatScheduled", keepAliveHeartbeat.isScheduled()),
             J.b("notificationsEnabled",
                 com.example.bilimonitor.notify.NotificationPoster.hasPermission(context)),
             J.n("monitoredStreamerCount", monitoredCount),

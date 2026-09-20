@@ -33,7 +33,15 @@ class MonitoringController @Inject constructor(
     @ApplicationContext private val context: Context,
     @Named("appScope") private val appScope: CoroutineScope,
     private val logDao: com.example.bilimonitor.data.local.dao.LogDao,
-    private val clock: com.example.bilimonitor.core.AppClock
+    private val clock: com.example.bilimonitor.core.AppClock,
+    /** 保活心跳：进程被杀后由闹钟把应用唤醒并重新拉起服务（见 KeepAliveHeartbeatReceiver）。 */
+    private val heartbeat: KeepAliveHeartbeat,
+    /**
+     * 高级保活仓库：`ensureRunning` 在"后台启动被拒"时会尝试用 root 身份代启动
+     * （uid 0 对后台启动限制与导出检查都无条件放行，是本项目能拿到的最后一条路）。
+     */
+    private val advancedKeepAlive:
+        com.example.bilimonitor.data.repository.AdvancedKeepAliveRepository
 ) {
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
 
@@ -122,6 +130,56 @@ class MonitoringController @Inject constructor(
                 schedulePowerSaving(snapshot.intervalSeconds)
             }
         }
+        // 心跳的排程只跟"实时模式 + 监控开着"走：
+        //  · 实时模式：它是进程被杀后唯一的恢复入口 → 必须排；
+        //  · 省电模式：WorkManager 的周期任务本身就是持久化的（进程死了 JobScheduler 也会拉起应用），
+        //    再排一个 15 分钟闹钟只是白唤醒（代理审查指出：原来省电/手动模式也会排）；
+        //  · 关掉监控：取消，否则会一直唤醒一个不需要运行的应用。
+        if (snapshot.monitoringEnabled && snapshot.mode == MonitoringMode.REALTIME) {
+            // ensureScheduled：已经在排就不重复设（避免每次配置变更都把触发时间往后推）
+            heartbeat.ensureScheduled()
+        } else {
+            heartbeat.cancel()
+        }
+    }
+
+    /**
+     * 心跳恢复：确认监控该在跑，不在跑就尝试拉起来。
+     *
+     * 供 [KeepAliveHeartbeatReceiver] 调用（**进程可能是刚被它唤醒的**），
+     * 也可以被其它"发现服务不在了"的路径复用。
+     *
+     * 返回**结果码**而不是 Boolean：调用方要把它写进审计/错误日志，
+     * "为什么没拉起来"（配置读不到 / 被系统拒绝 / 本来就不该跑）必须能区分开。
+     *
+     * @return already_running / started_realtime / power_saving_rescheduled /
+     *         monitoring_disabled / config_unavailable / start_rejected:&lt;异常类&gt; / manual_mode
+     */
+    suspend fun ensureRunning(reason: String): String {
+        if (MonitoringService.isRunning.value) return "already_running"
+        val snapshot = runCatching { configRepository.getSnapshot() }.getOrNull()
+            ?: return "config_unavailable"
+        if (!snapshot.monitoringEnabled) return "monitoring_disabled"
+        if (snapshot.mode == MonitoringMode.MANUAL) return "manual_mode"
+        if (snapshot.mode != MonitoringMode.REALTIME) {
+            // 省电模式：由 WorkManager 负责（它自己是持久化的，不需要我们再拉）
+            schedulePowerSaving(snapshot.intervalSeconds)
+            return "power_saving_rescheduled"
+        }
+        android.util.Log.i("MonitoringController", "心跳恢复尝试（$reason）：拉起前台服务")
+        return runCatching {
+            ContextCompat.startForegroundService(context, Intent(context, MonitoringService::class.java))
+            "started_realtime"
+        }.getOrElse { e ->
+            // 后台启动被拒（Android 12+ 的 FGS 限制）时如实回报，由调用方留痕。
+            // 官方豁免之一是"已加入电池优化白名单"——设置页里有一键申请入口。
+            // ★ root 档还有一条兜底（代理调研）：让 uid 0 代我们启动 —— AOSP 里只有 root/system
+            //   对"后台启动限制"与"组件导出检查"无条件放行。
+            //   Shizuku（uid 2000）做不到：我们的服务是 exported=false，shell 会被导出检查挡住；
+            //   而为了保活把服务改成 exported 会让任何应用都能反复拉起它（耗电/骚扰面），不做。
+            val viaRoot = runCatching { advancedKeepAlive.startServiceAsRoot() }.getOrDefault(false)
+            if (viaRoot) "started_via_root" else "start_rejected:${e.javaClass.simpleName}"
+        }
     }
 
     fun startRealtime() {
@@ -172,6 +230,46 @@ class MonitoringController @Inject constructor(
             )
         }.onFailure {
             android.util.Log.w("MonitoringController", "刷新常驻通知失败：${it.message}")
+        }
+    }
+
+    /**
+     * 让 wakelock 立刻跟上「锁屏继续活跃」开关。
+     *
+     * 为什么要有它：[MonitoringService] 每轮 Tick 会同步一次，但监控间隔最长 3600 秒 ——
+     * 用户刚拨开开关却要等一小时才生效，体验上就是"开关没用"。
+     *
+     * **服务没在跑时什么都不做**：没有监控循环时 wakelock 毫无意义，
+     * 为了同步一个锁把前台服务拉起来是荒谬的（`isRunning` 是"服务真的在跑"的判据，
+     * 见 MonitoringService 里那句"界面必须反映 FGS 是否真的在跑"）。
+     */
+    fun syncKeepAliveNow() {
+        if (!MonitoringService.isRunning.value) return
+        runCatching {
+            context.startService(
+                Intent(context, MonitoringService::class.java)
+                    .setAction(MonitoringService.ACTION_SYNC_KEEP_ALIVE)
+            )
+        }.onFailure { e ->
+            // 与 startRealtime 一致：被系统拒绝必须**落库**（原来只写 logcat，而诊断包不含 logcat，
+            // 用户与排查者都看不到原因）—— 用户的"已开启锁屏继续活跃"此时是假的。
+            android.util.Log.w("MonitoringController", "同步 wakelock 失败：${e.message}")
+            appScope.launch { logStartRejected("同步 wakelock（锁屏继续活跃）", e) }
+        }
+    }
+
+    /** 记录一次"后台启动服务被系统拒绝"（原因必须能进诊断包）。 */
+    private suspend fun logStartRejected(what: String, e: Throwable) {
+        runCatching {
+            logDao.insertAppError(
+                com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                    errorId = com.example.bilimonitor.core.Ids.newId(),
+                    operationId = null, occurredAt = clock.nowWall(),
+                    errorCode = com.example.bilimonitor.data.local.AppError.BACKGROUND_EXECUTION_RESTRICTED,
+                    detail = ("$what：startService 被系统拒绝（${e.javaClass.simpleName}）：${e.message}。" +
+                        "可在设置页「高级保活」里申请「忽略电池优化」以提高允许度。").take(500)
+                )
+            )
         }
     }
 

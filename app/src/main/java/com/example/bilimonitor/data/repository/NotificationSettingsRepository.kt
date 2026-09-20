@@ -108,6 +108,33 @@ object NotificationTemplate {
             .replace("{count}", monitoredCount?.toString() ?: UNKNOWN_COUNT)
             .replace("{live}", liveCount?.toString() ?: UNKNOWN_COUNT)
 
+    /**
+     * 把多位主播名拼成一行（**合并通知的正文**），尽量多列但不超过 [max] 个字符。
+     *
+     * 为什么需要它：合并通知代表的是"这一批里的**全部**主播"
+     * （阈值语义见 [com.example.bilimonitor.domain.policy.NotificationAggregationPolicy]），
+     * 而正文有长度上限。原先硬取前 5 位，人数一多正文就只剩「等」，
+     * 用户看不出到底合并了谁 —— 与"合并所有主播的通知"这个诉求不符。
+     *
+     * 规则：按顺序尽量多放；放不下的用「等」收尾；单个名字就超长时至少显示它自己
+     * （宁可略超一点，也不要变成一条没有名字的通知）。
+     */
+    fun joinStreamerNames(names: List<String>, max: Int = MAX_TEXT_LENGTH): String {
+        if (names.isEmpty()) return ""
+        val shown = mutableListOf<String>()
+        for (name in names) {
+            // 给「 等」预留 2 个字符，保证最终串不超上限
+            if ((shown + name).joinToString("、").length > max - 2) break
+            shown += name
+        }
+        if (shown.isEmpty()) return names.first().take(max)
+        return if (shown.size < names.size) {
+            shown.joinToString("、") + " 等"
+        } else {
+            shown.joinToString("、")
+        }
+    }
+
     fun sanitizeTitle(raw: String): String = sanitize(raw, MAX_TITLE_LENGTH)
 
     fun sanitizeText(raw: String): String = sanitize(raw, MAX_TEXT_LENGTH)

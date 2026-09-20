@@ -246,7 +246,12 @@ class NotificationPoster @Inject constructor(
         if (payload.items.isEmpty()) return null
         val names = payload.items.map { it.streamerName.ifBlank { "主播" } }
         val title = "${names.size} 位主播正在直播"
-        val text = names.take(5).joinToString("、") + if (names.size > 5) " 等" else ""
+        // ★ 合并通知代表的是"这一批里的**全部**主播"（阈值语义见
+        //   NotificationAggregationPolicy：超过阈值就把他们全部合并成一条），
+        //   所以正文要尽量把名字都列出来，而不是像原先那样硬取前 5 位 ——
+        //   人多时正文只剩「等」，用户根本看不出合并了谁。
+        val text = com.example.bilimonitor.data.repository.NotificationTemplate
+            .joinStreamerNames(names)
         val firstUrl = payload.items.firstNotNullOfOrNull { it.url }
         return NotificationCompat.Builder(context, channelIdFor(outbox.eventType))
             .setSmallIcon(R.drawable.ic_notification)

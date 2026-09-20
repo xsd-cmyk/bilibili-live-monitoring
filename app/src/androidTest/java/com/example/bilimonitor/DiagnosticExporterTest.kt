@@ -50,7 +50,28 @@ class DiagnosticExporterTest {
             override fun bootId(): String = "test-boot"
             override fun currentTimeZone(): String = "Asia/Shanghai"
         }
-        exporter = DiagnosticExporter(context, db, clock)
+        exporter = DiagnosticExporter(
+            context,
+            db,
+            clock,
+            // 新增的三个依赖：只读探测提权/电源环境（不会触发任何授权弹窗）
+            com.example.bilimonitor.data.repository.AdvancedKeepAliveRepository(
+                context,
+                com.example.bilimonitor.data.privilege.RootShell(),
+                com.example.bilimonitor.data.privilege.ShizukuShell(context),
+                db.logDao(),
+                clock
+            ),
+            com.example.bilimonitor.data.privilege.RootShell(),
+            com.example.bilimonitor.data.privilege.ShizukuShell(context),
+            // 心跳排程状态（诊断包会如实报"心跳有没有排上"）
+            com.example.bilimonitor.background.KeepAliveHeartbeat(
+                context,
+                clock,
+                db.logDao(),
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+            )
+        )
     }
 
     @After

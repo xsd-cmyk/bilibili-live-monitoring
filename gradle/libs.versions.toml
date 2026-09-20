@@ -23,6 +23,8 @@ androidxTestJunit = "1.2.1"
 androidxTestRunner = "1.6.2"
 zxing = "3.5.3"
 securityCrypto = "1.1.0-alpha06"
+# Shizuku：把 shell(adb) 级权限借给应用 —— 高级保活用它设置 Doze 白名单 / 待机桶 / appops
+shizuku = "13.1.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -62,6 +64,8 @@ androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
+shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

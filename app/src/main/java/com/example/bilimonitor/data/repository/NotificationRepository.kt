@@ -10,6 +10,7 @@ import com.example.bilimonitor.data.local.dao.NotificationAggregateDao
 import com.example.bilimonitor.data.local.dao.NotificationOutboxDao
 import com.example.bilimonitor.data.local.dao.StreamerDao
 import com.example.bilimonitor.data.local.db.AppDatabase
+import com.example.bilimonitor.domain.policy.NotificationAggregationPolicy
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -30,9 +31,13 @@ class NotificationRepository @Inject constructor(
 ) {
 
     /**
-     * 窗口到达 windowEnd 的定案流程（0.6.10）：
-     *  - 达到阈值：冻结 + Batch Outbox；
-     *  - 未达阈值：RELEASED → CANCELLED → 逐条创建单事件 Outbox（顺序不可颠倒）。
+     * 窗口到达 windowEnd 的定案流程（0.6.10；判定语义见 [NotificationAggregationPolicy]）：
+     *  - **超过**阈值：冻结 + Batch Outbox —— 一条通知里包含**本窗口内全部**主播；
+     *  - 不超过阈值：RELEASED → CANCELLED → 逐条创建单事件 Outbox（顺序不可颠倒）。
+     *
+     * 阈值回答的是"多少位算多、值得合并"，**不是**"一条通知里装多少位"：
+     * 提前冻结会把一个突发切成好几个批次（阈值 4 + 10 位 ⇒ 3 条通知），
+     * 而用户要的是一条含全部主播的通知。窗口默认 5 秒，等它关闭只多等几秒。
      */
     suspend fun processWindowEnds(): Int {
         val now = clock.nowWall()
@@ -54,7 +59,9 @@ class NotificationRepository @Inject constructor(
                     fresh.status != NotificationAggregateStatus.READY
                 ) return@withTransaction false
                 val bindings = aggregateDao.listActiveEvents(fresh.aggregateId)
-                if (bindings.size >= fresh.threshold) {
+                // 判定走策略对象（严格大于）：阈值 N = "超过 N 位就合并"，正好 N 位则逐条单独发。
+                // 把规则放在可单测的对象里，避免以后有人把 `>` 又写回 `>=` 而没人发现。
+                if (NotificationAggregationPolicy.shouldMergeAll(bindings.size, fresh.threshold)) {
                     aggregateDao.casStatus(fresh.aggregateId, fresh.status, NotificationAggregateStatus.FROZEN, null, bindings.size)
                     NotificationOutboxWriter.createBatchOutbox(db, clock, fresh.aggregateId, now, fresh.configVersion)
                 } else {

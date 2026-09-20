@@ -70,4 +70,41 @@ class NotificationTemplateTest {
         assertTrue(NotificationTemplate.sanitizeTitle(long).length <= NotificationTemplate.MAX_TITLE_LENGTH)
         assertTrue(NotificationTemplate.sanitizeText(long).length <= NotificationTemplate.MAX_TEXT_LENGTH)
     }
+
+    // ---- 合并通知的正文（"合并所有主播"要能看出合并了谁）----
+
+    @Test
+    fun `joinStreamerNames 在长度允许时列出全部主播`() {
+        val names = listOf("露蒂丝", "少年Pi", "白神遥Haruka")
+        assertEquals("露蒂丝、少年Pi、白神遥Haruka", NotificationTemplate.joinStreamerNames(names))
+    }
+
+    @Test
+    fun `joinStreamerNames 放不下时用等收尾且不超上限`() {
+        // 20 位 10 字名字，正文上限 120 字符 → 必须截断并用「等」收尾
+        val names = (1..20).map { "主播名字%02d号".format(it) }
+        val text = NotificationTemplate.joinStreamerNames(names)
+        assertTrue("不得超出正文上限", text.length <= NotificationTemplate.MAX_TEXT_LENGTH)
+        assertTrue("截断时必须用「等」收尾，不能让用户以为只有这几位", text.endsWith(" 等"))
+        assertTrue("至少要列出前几位", text.startsWith(names.first()))
+    }
+
+    @Test
+    fun `joinStreamerNames 单个超长名字也不能变成空串`() {
+        val text = NotificationTemplate.joinStreamerNames(listOf("名".repeat(300)))
+        assertTrue("至少要显示这个名字（截断到上限），不能返回空串", text.isNotEmpty())
+        assertTrue(text.length <= NotificationTemplate.MAX_TEXT_LENGTH)
+    }
+
+    @Test
+    fun `joinStreamerNames 空列表返回空串`() {
+        assertEquals("", NotificationTemplate.joinStreamerNames(emptyList()))
+    }
+
+    @Test
+    fun `joinStreamerNames 不会因为数量多就丢掉等字以外的信息`() {
+        // 恰好放得下时不加「等」（否则会让人以为还有更多）
+        val two = listOf("甲", "乙")
+        assertEquals("甲、乙", NotificationTemplate.joinStreamerNames(two))
+    }
 }
