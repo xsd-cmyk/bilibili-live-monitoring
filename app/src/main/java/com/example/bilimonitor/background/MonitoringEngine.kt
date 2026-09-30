@@ -1490,6 +1490,7 @@ class MonitoringEngine @Inject constructor(
                 notifyStart = snapshot.notifyStartFor(streamer.stableId),
                 notifyEnd = snapshot.notifyEndFor(streamer.stableId),
                 aggregationEnabled = snapshot.aggregationEnabled,
+                endAggregationEnabled = snapshot.endAggregationEnabled,
                 aggregationThreshold = snapshot.aggregationThreshold,
                 aggregationWindowSeconds = snapshot.aggregationWindowSeconds,
                 // 标题/分区变化通知（默认关闭）

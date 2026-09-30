@@ -300,20 +300,73 @@ class CircuitBreakerConfigTest {
     }
 
     @Test
-    fun `DB_VERSION 升到 10`() {
+    fun `DB_VERSION 升到 11`() {
         val field = AppDatabase::class.java.getField("DB_VERSION")
-        assertEquals("库版本必须与 @Database(version = ...) 同步", 10, field.getInt(null))
+        assertEquals("库版本必须与 @Database(version = ...) 同步", 11, field.getInt(null))
     }
 
     @Test
-    fun `ALL 里注册了 9 到 10 的迁移且总数正确`() {
+    fun `ALL 里注册了 9 到 10 与 10 到 11 的迁移且总数正确`() {
         val pairs = AppMigrations.ALL.map { it.startVersion to it.endVersion }
         assertTrue("必须注册 9→10，否则老库升级时 Room 直接抛 IllegalStateException", pairs.contains(9 to 10))
+        assertTrue(
+            "必须注册 10→11（聚合窗口方向列 + 下播合并开关），否则老库升级时 Room 直接抛 IllegalStateException",
+            pairs.contains(10 to 11)
+        )
         assertEquals(
-            "迁移链必须首尾相接：1→2→…→9→10",
-            listOf(1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10),
+            "迁移链必须首尾相接：1→2→…→10→11",
+            listOf(1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10, 10 to 11),
             pairs
         )
+    }
+
+    @Test
+    fun `V10_11 先摘掉部分索引再给三处加列（DEFAULT 逐字一致）`() {
+        val migration = AppMigrations.ALL.first { it.startVersion == 10 && it.endVersion == 11 }
+        val recorder = RecordingDb()
+        migration.migrate(recorder.create())
+        val sql = recorder.statements
+
+        val drops = sql.filter { it.startsWith("DROP INDEX IF EXISTS") }
+        val alters = sql.filter { it.startsWith("ALTER TABLE") }
+        val firstAlter = sql.indexOfFirst { it.startsWith("ALTER TABLE") }
+        val lastDrop = sql.indexOfLast { it.startsWith("DROP INDEX IF EXISTS") }
+
+        assertEquals("必须摘掉全部 16 条部分唯一索引", 16, drops.size)
+        assertTrue("第一条语句就必须是 DROP INDEX（dropPartialIndexes 在最前）", sql.first().startsWith("DROP INDEX IF EXISTS"))
+        assertTrue(
+            "所有 DROP 必须发生在 ALTER 之前；否则迁移后 Room 的全量 schema 校验会因残留部分索引而失败（V8_9 踩过的坑）",
+            lastDrop < firstAlter
+        )
+        assertEquals(
+            listOf(
+                "ALTER TABLE notification_aggregate ADD COLUMN aggregateKind TEXT NOT NULL DEFAULT 'LIVE'",
+                "ALTER TABLE monitoring_config ADD COLUMN endAggregationEnabled INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE monitoring_config_revision ADD COLUMN endAggregationEnabled INTEGER NOT NULL DEFAULT 1"
+            ),
+            alters
+        )
+        // 老行必须拿到确定默认值：聚合方向落 LIVE（那时只有开播会聚合），开关落 1（默认开）
+        assertTrue("聚合方向列的 DEFAULT 必须逐字等于实体上的 @ColumnInfo(defaultValue = \"LIVE\")",
+            alters[0].endsWith("DEFAULT 'LIVE'"))
+        assertTrue("配置两列的 DEFAULT 必须逐字等于 @ColumnInfo(defaultValue = \"1\")",
+            alters[1].endsWith("DEFAULT 1") && alters[2].endsWith("DEFAULT 1"))
+    }
+
+    @Test
+    fun `v11 的聚合窗口唯一索引按 (bootId, aggregateKind) —— 开播与下播各自成窗`() {
+        val recorder = RecordingDb()
+        AppMigrations.createPartialIndexes(recorder.create())
+        val aggregateIndex = recorder.statements.firstOrNull {
+            it.contains("idx_aggregate_one_in_progress")
+        }
+        assertTrue("必须仍有这条部分唯一索引", aggregateIndex != null)
+        assertTrue(
+            "唯一键必须带上 aggregateKind，否则开播窗口开着时下播事件无法开自己的窗口（同一个突发里" +
+                "既有开播又有下播时会串成一条语义错误的通知）",
+            aggregateIndex!!.contains("(bootId, aggregateKind)")
+        )
+        assertTrue("仍然只约束进行中的窗口", aggregateIndex.contains("status IN ('COLLECTING','READY')"))
     }
 
     @Test
@@ -393,6 +446,12 @@ class CircuitBreakerConfigTest {
             val enabledIndex = columns.indexOf("circuitBreakerEnabled")
             assertTrue("两张表都必须有 circuitBreakerEnabled 列", enabledIndex >= 0)
             assertEquals("新装默认必须是 1（＝打开熔断，保持既有行为）", "1", values[enabledIndex])
+
+            // v11：批量下播合并默认开（与 DDL 的 DEFAULT 1 同口径；漏掉这一列会让新装种子行
+            // 依赖 DDL 默认值 —— 能跑，但与上面 circuitBreakerEnabled 的显式写法不一致，容易漏改）
+            val endAggIndex = columns.indexOf("endAggregationEnabled")
+            assertTrue("两张表都必须有 endAggregationEnabled 列（v11）", endAggIndex >= 0)
+            assertEquals("新装默认必须是 1（＝批量下播合并默认开）", "1", values[endAggIndex])
 
             val recoveryIndex = columns.indexOf("circuitBreakerRecoverySeconds")
             assertTrue(recoveryIndex >= 0)

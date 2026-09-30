@@ -207,6 +207,7 @@ class DiagnosticExporter @Inject constructor(
                 J.b("circuitBreakerEnabled", config.circuitBreakerEnabled),
                 J.b("aggregationEnabled", config.aggregationEnabled),
                 J.n("aggregationThreshold", config.aggregationThreshold),
+                J.b("endAggregationEnabled", config.endAggregationEnabled),
                 J.n("aggregationWindowSeconds", config.aggregationWindowSeconds),
                 J.n("batchCooldownSeconds", config.batchCooldownSeconds),
                 J.n("freshnessStaleSeconds", config.freshnessStaleSeconds),
@@ -444,7 +445,7 @@ class DiagnosticExporter @Inject constructor(
          *   本次把 `8 to 9`（失败占比 + 封禁复查间隔）与 `9 to 10`（熔断开关）一并补上。
          */
         val MIGRATION_PAIRS: List<Pair<Int, Int>> = listOf(
-            1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10
+            1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10, 10 to 11
         )
     }
 }

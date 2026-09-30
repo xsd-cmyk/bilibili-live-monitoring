@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.example.bilimonitor.core.AppClock
 import com.example.bilimonitor.core.Ids
 import com.example.bilimonitor.data.local.AggregateEventBindingStatus
+import com.example.bilimonitor.data.local.NotificationAggregateKind
 import com.example.bilimonitor.data.local.NotificationAggregateStatus
 import com.example.bilimonitor.data.local.NotificationEventType
 import com.example.bilimonitor.data.local.NotificationOutboxStatus
@@ -43,7 +44,15 @@ data class LiveNotificationPayload(
 data class BatchNotificationPayload(
     val aggregateId: String,
     val windowStartWall: Long,
-    val items: List<LiveNotificationPayload>
+    val items: List<LiveNotificationPayload>,
+    /**
+     * 聚合方向（v11）：`LIVE` = 开播合并，`END` = 下播合并。
+     *
+     * 为什么放在 payload 里而不是渲染时查库：渲染发生在投递时机（可能延迟、可能重试），
+     * 而"这条通知代表什么"是**创建时**就确定的事实。带默认值 `LIVE` 让升级前已入队的批次
+     * 照常渲染成开播文案（不会因为缺字段而变成空白通知）。
+     */
+    val kind: String = "LIVE"
 )
 
 /**
@@ -256,11 +265,26 @@ object NotificationOutboxWriter {
         //   事件就先绑进窗口，等窗口关闭时再按"是否超过阈值"决定合并还是逐条发
         //   （判定见 NotificationAggregationPolicy；窗口默认 5 秒）。
         //   原先这里还要求 threshold > 1，会把"阈值 = 1（超过 1 位就合并）"静默当成不聚合。
+        //
+        // ★ v11：开播与下播**各自成窗**（NotificationAggregateKind）—— 一个突发里可能有开播
+        //   也有下播，混在一个窗口里只能发出语义错误的通知；两个方向也各有自己的开关。
+        val kind = if (eventType == NotificationEventType.END_CONFIRMED) {
+            NotificationAggregateKind.END
+        } else {
+            NotificationAggregateKind.LIVE
+        }
+        val aggregationOn = if (kind == NotificationAggregateKind.END) {
+            policy.endAggregationEnabled
+        } else {
+            policy.aggregationEnabled
+        }
         val useWindow = NotificationAggregationPolicy.usesAggregationWindow(
-            policy.aggregationEnabled, policy.aggregationThreshold
+            aggregationOn, policy.aggregationThreshold
         )
         if (useWindow) {
-            bindOrCreateAggregate(db, clock, event, streamerId, payloadJson, policy, configVersion, now, eventType)
+            bindOrCreateAggregate(
+                db, clock, event, streamerId, payloadJson, policy, configVersion, now, eventType, kind
+            )
         } else {
             createSingle(
                 db = db, clock = clock, event = event, streamerId = streamerId,
@@ -279,12 +303,14 @@ object NotificationOutboxWriter {
         policy: StreamerNotificationPolicy,
         configVersion: Long,
         now: Long,
-        eventType: NotificationEventType = NotificationEventType.START_CONFIRMED
+        eventType: NotificationEventType = NotificationEventType.START_CONFIRMED,
+        kind: NotificationAggregateKind = NotificationAggregateKind.LIVE
     ) {
         val aggDao = db.notificationAggregateDao()
         val outboxDao = db.notificationOutboxDao()
         val bootId = clock.bootId()
-        var agg: NotificationAggregateEntity? = aggDao.findInProgress(bootId)
+        // 按方向找进行中的窗口：开播窗口与下播窗口可以同时存在（部分唯一索引按 (bootId, kind)）
+        var agg: NotificationAggregateEntity? = aggDao.findInProgress(bootId, kind)
         if (agg == null) {
             val windowMs = policy.aggregationWindowSeconds * 1000L
             val candidate = NotificationAggregateEntity(
@@ -295,6 +321,7 @@ object NotificationOutboxWriter {
                 windowStartElapsed = clock.nowElapsed(),
                 windowEndElapsed = clock.nowElapsed() + windowMs,
                 bootId = bootId,
+                aggregateKind = kind,
                 threshold = policy.aggregationThreshold,
                 eventCount = 0,
                 status = NotificationAggregateStatus.COLLECTING,
@@ -307,7 +334,7 @@ object NotificationOutboxWriter {
             } catch (e: Exception) {
                 false
             }
-            agg = if (inserted) candidate else aggDao.findInProgress(bootId)
+            agg = if (inserted) candidate else aggDao.findInProgress(bootId, kind)
         }
         val aggregate = agg ?: run {
             createSingle(db, clock, event, streamerId, eventType, payloadJson, now, true, configVersion)
@@ -375,8 +402,12 @@ object NotificationOutboxWriter {
                 coverUrl = streamer.coverUrl
             )
         }
+        val isEnd = aggregate.aggregateKind == NotificationAggregateKind.END
         val payload = NotificationPayloads.encodeBatch(
-            BatchNotificationPayload(aggregateId, aggregate.windowStartWall, items)
+            BatchNotificationPayload(
+                aggregateId, aggregate.windowStartWall, items,
+                kind = aggregate.aggregateKind.name
+            )
         )
         val eventKey = Ids.eventKeyForAggregate(aggregateId)
         val notificationId = getOrCreateNotificationId(db, eventKey, now)
@@ -390,7 +421,12 @@ object NotificationOutboxWriter {
                 aggregateId = aggregateId,
                 problemKey = null,
                 notificationId = notificationId,
-                eventType = NotificationEventType.BATCH_LIVE,
+                // 下播方向用 BATCH_END：渠道仍是"直播状态通知"，但渲染文案与点击落点都走下播那一套
+                eventType = if (isEnd) {
+                    NotificationEventType.BATCH_END
+                } else {
+                    NotificationEventType.BATCH_LIVE
+                },
                 payloadJson = payload,
                 status = NotificationOutboxStatus.PENDING,
                 nextAttemptAt = now,

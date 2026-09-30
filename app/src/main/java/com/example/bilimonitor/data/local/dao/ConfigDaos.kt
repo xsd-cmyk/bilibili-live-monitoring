@@ -70,6 +70,7 @@ interface ConfigDao {
             retryFailureRatioPercent = :retryFailureRatioPercent,
             banRecheckIntervalSeconds = :banRecheckIntervalSeconds,
             circuitBreakerEnabled = :circuitBreakerEnabled,
+            endAggregationEnabled = :endAggregationEnabled,
             updatedAt = :now
         WHERE singletonId = 1 AND configVersion = :expectedConfigVersion
         """
@@ -87,7 +88,9 @@ interface ConfigDao {
         startConfirmationCount: Int, endConfirmationCount: Int, placeholderText: String,
         retryFailureRatioPercent: Int, banRecheckIntervalSeconds: Int,
         /** v10 熔断总开关（false = 失败批次一直重试、不暂停）。 */
-        circuitBreakerEnabled: Boolean, now: Long
+        circuitBreakerEnabled: Boolean,
+        /** v11 批量下播合并开关。 */
+        endAggregationEnabled: Boolean, now: Long
     ): Int
 
     @Query(

@@ -69,6 +69,14 @@ data class MonitoringConfigEntity(
      * "Migration didn't properly handle ..."（开库即崩、无自愈路径）。
      */
     @ColumnInfo(defaultValue = "1") val circuitBreakerEnabled: Boolean = true,
+    /**
+     * 批量**下播**合并通知（v11 新增列，默认 **true**）。
+     *
+     * 与 [aggregationEnabled]（开播方向）相互独立：两者各自一个聚合窗口，阈值共用
+     * [aggregationThreshold]。默认开 = 用户不配置也能拿到"一批下播合成一条"的效果。
+     * `DEFAULT 1` 必须与 V10_11 迁移里的 DDL 逐字一致，否则迁移后校验会崩。
+     */
+    @ColumnInfo(defaultValue = "1") val endAggregationEnabled: Boolean = true,
     val updatedAt: Long
 )
 
@@ -102,6 +110,8 @@ data class MonitoringConfigRevisionEntity(
     @ColumnInfo(defaultValue = "1800") val banRecheckIntervalSeconds: Int = 1800,
     /** 修订快照同样带上 v10 的熔断开关，避免"当前值有、历史值无"的口径分叉。 */
     @ColumnInfo(defaultValue = "1") val circuitBreakerEnabled: Boolean = true,
+    /** 修订快照同样带上 v11 的下播合并开关，避免"当前值有、历史值无"的口径分叉。 */
+    @ColumnInfo(defaultValue = "1") val endAggregationEnabled: Boolean = true,
     val createdAt: Long
 )
 

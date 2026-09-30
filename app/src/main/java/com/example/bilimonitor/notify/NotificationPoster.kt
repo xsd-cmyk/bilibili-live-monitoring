@@ -94,7 +94,7 @@ class NotificationPoster @Inject constructor(
             )
         }
         val builder = when (outbox.eventType) {
-            NotificationEventType.BATCH_LIVE -> buildBatch(outbox)
+            NotificationEventType.BATCH_LIVE, NotificationEventType.BATCH_END -> buildBatch(outbox)
             NotificationEventType.SYSTEM_PROBLEM, NotificationEventType.SYSTEM_RECOVERED -> buildSystem(outbox)
             // 封禁类有自己的 payload：若落到 buildSingle 会解不出 LiveNotificationPayload，
             // 直接判成 PAYLOAD_INVALID，通知永远发不出去（所以这个分支是必需的）。
@@ -170,7 +170,7 @@ class NotificationPoster @Inject constructor(
 
     /** 下播类事件：点击一律落回应用内，不再唤起客户端/浏览器。批量、开播类都不受影响。 */
     private fun isOfflineEvent(eventType: NotificationEventType): Boolean =
-        eventType == NotificationEventType.END_CONFIRMED
+        eventType == NotificationEventType.END_CONFIRMED || eventType == NotificationEventType.BATCH_END
 
     /**
      * 应用内页面（主播详情 / 播放历史 / 诊断页）：作为"没有直播间地址"时的兜底。
@@ -245,7 +245,12 @@ class NotificationPoster @Inject constructor(
         val payload = NotificationPayloads.decodeBatch(outbox.payloadJson) ?: return null
         if (payload.items.isEmpty()) return null
         val names = payload.items.map { it.streamerName.ifBlank { "主播" } }
-        val title = "${names.size} 位主播正在直播"
+        // 方向决定文案：开播批次说"正在直播"，下播批次说"已下播"（v11 的批量下播合并）
+        val title = if (payload.kind == com.example.bilimonitor.data.local.NotificationAggregateKind.END.name) {
+            "${names.size} 位主播已下播"
+        } else {
+            "${names.size} 位主播正在直播"
+        }
         // ★ 合并通知代表的是"这一批里的**全部**主播"（阈值语义见
         //   NotificationAggregationPolicy：超过阈值就把他们全部合并成一条），
         //   所以正文要尽量把名字都列出来，而不是像原先那样硬取前 5 位 ——

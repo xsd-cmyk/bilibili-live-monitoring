@@ -189,6 +189,14 @@ data class BackupMonitoringSettings(
     val circuitBreakerThreshold: Int,
     val circuitBreakerRecoverySeconds: Int,
     val aggregationEnabled: Boolean,
+    /**
+     * v11 批量下播合并开关。
+     *
+     * ★ 必须带默认值：旧备份文件里没有这个键，`ignoreUnknownKeys` 只解决"多字段"、
+     *   解决不了"缺字段" —— 没有默认值会让旧备份恢复时反序列化直接失败，
+     *   用户看到的是"备份文件损坏"这种完全误导的结论（与 v9/v10 两次同样的坑）。
+     */
+    val endAggregationEnabled: Boolean = true,
     val aggregationThreshold: Int,
     val aggregationWindowSeconds: Int,
     val batchCooldownSeconds: Int,
@@ -470,6 +478,7 @@ class BackupRepository @Inject constructor(
                     circuitBreakerThreshold = c.circuitBreakerThreshold,
                     circuitBreakerRecoverySeconds = c.circuitBreakerRecoverySeconds,
                     aggregationEnabled = c.aggregationEnabled,
+                    endAggregationEnabled = c.endAggregationEnabled,
                     aggregationThreshold = c.aggregationThreshold,
                     aggregationWindowSeconds = c.aggregationWindowSeconds,
                     batchCooldownSeconds = c.batchCooldownSeconds,
@@ -1200,6 +1209,8 @@ class BackupRepository @Inject constructor(
                         circuitBreakerThreshold = m.circuitBreakerThreshold,
                         circuitBreakerRecoverySeconds = m.circuitBreakerRecoverySeconds,
                         aggregationEnabled = m.aggregationEnabled,
+                        // v11 下播合并开关随备份恢复；旧备份缺键时 DTO 落到默认 true。
+                        endAggregationEnabled = m.endAggregationEnabled,
                         aggregationThreshold = m.aggregationThreshold,
                         aggregationWindowSeconds = m.aggregationWindowSeconds,
                         batchCooldownSeconds = m.batchCooldownSeconds,

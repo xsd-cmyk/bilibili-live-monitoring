@@ -1223,6 +1223,92 @@ ActivityTaskManager: START u0 {act=android.intent.action.VIEW dat=https://live.b
 
 
 
+### H76. 批量下播合并通知（v11：聚合窗口分方向 + 配置开关）
+
+#### ① 用户诉求
+
+「新增一个功能，在通知合并那里新增一个批量下播合并通知。」
+
+#### ② 为什么这件事不能只改一行
+
+原来的聚合只覆盖**开播方向**：`MonitorRepository.createEndNotification` 直接调 `createSingle`，
+注释里也写着「关播通知不走聚合（批量开播聚合只针对 LIVE 方向）」。
+
+要加下播合并，直觉做法是"把下播也丢进同一个窗口"，但那是错的：聚合窗口是**一个时间窗**，
+而一个突发里完全可能既有开播又有下播 —— 混在一个窗口里只能发出一条语义错误的通知
+（"N 位主播正在直播"里混进了已经下播的主播）。所以必须是**两个方向各自一个窗口**。
+
+而窗口表 `notification_aggregate` 原本没有"方向"列，并且有一条部分唯一索引
+`idx_aggregate_one_in_progress = UNIQUE(bootId) WHERE status IN ('COLLECTING','READY')`
+—— 它保证"同一时刻只有一个进行中窗口"，正好挡住了双窗口。因此本次是一次**真实的数据模型改动**：
+
+| 改动 | 内容 |
+|---|---|
+| 新列 | `notification_aggregate.aggregateKind TEXT NOT NULL DEFAULT 'LIVE'` |
+| 新列 | `monitoring_config.endAggregationEnabled INTEGER NOT NULL DEFAULT 1` |
+| 新列 | `monitoring_config_revision.endAggregationEnabled INTEGER NOT NULL DEFAULT 1` |
+| 索引 | `idx_aggregate_one_in_progress` 改为 `UNIQUE(bootId, aggregateKind) WHERE status IN ('COLLECTING','READY')` |
+| 版本 | `DB_VERSION` 10 → **11**；新增迁移 `V10_11__aggregateKindAndEndAggregation` |
+
+索引那条要注意：它由 `createPartialIndexes` 用 `CREATE UNIQUE INDEX IF NOT EXISTS` 重建，
+**定义变了就必须先 DROP**（迁移首行的 `dropPartialIndexes` 正是为此），否则老索引会一直留着。
+
+开关放进 `monitoring_config`（而不是 DataStore）：备份/恢复与诊断包会自动带上它，
+不会出现"界面开着、备份里没有"的口径分叉（与 `circuitBreakerEnabled` 同一取舍）。
+
+#### ③ 语义（与开播方向逐字一致）
+
+- **超过**阈值 → 把这一批下播的主播**全部**合并成一条（沿用 H74 定下的 `NotificationAggregationPolicy.shouldMergeAll`，严格大于）；
+- 不超过阈值 → 逐条单独发；
+- 两个方向**各自一个窗口**，互不干扰；开关也各自独立（开播是 `aggregationEnabled`，下播是 `endAggregationEnabled`，默认都开）。
+
+实现要点：
+- `NotificationOutboxWriter.createForEvent` 按 `eventType` 推出方向（`END_CONFIRMED` → `END`，其余 → `LIVE`），
+  门控取对应开关；窗口按 `(bootId, kind)` 查找；批次的 `eventType` 用新的 `BATCH_END`，payload 带 `kind`。
+- `BatchNotificationPayload` 新增 `kind: String = "LIVE"`：带默认值让**升级前已入队**的批次照常渲染成开播文案。
+- 渲染：`"N 位主播已下播"`（开播仍是 `"N 位主播正在直播"`）；点击落点沿用下播那一套（进该主播的直播历史页），
+  渠道仍是「直播状态通知」。
+- 设置页「通知聚合」卡片新增一行开关，文案明确写"与开播合并各自成窗、互不影响"。
+
+#### ④ 验证
+
+**真实迁移（模拟器，v0622.1 → v0622.2 覆盖安装）**
+```
+v0622.1 建出的库：version=10  identity=ff7c2ef7805bfccc7594de231ecd9156（== 10.json）
+覆盖安装后      ：version=11  identity=7132d2210c15fba707a6513e735772ac（== 11.json）
+新列默认值      ：aggregateKind TEXT notnull=1 default='LIVE'
+                  endAggregationEnabled INTEGER notnull=1 default=1（现值 1）
+部分索引        ：16 条全部恢复，聚合唯一索引已变为 (bootId, aggregateKind)
+既有数据        ：intervalSeconds 60→60、configVersion 1→1（未被重置）
+日志            ：无 "Migration didn't properly handle" / FATAL / SQLiteException
+```
+**单测**：37 套件 / **345** 用例 / 0 失败（新增两个针对 V10_11 的测试：DDL 顺序与 DEFAULT 逐字一致、
+以及"聚合唯一索引必须含 aggregateKind"）。
+
+**真库 instrumented（7 例，模拟器实跑）**：在原 4 例（开播方向）之上新增 4 例 ——
+下播超过阈值合并成一条且 `eventType=BATCH_END`、payload 方向为 `END`；
+下播正好等于阈值逐条单发；关掉开关后逐条单发；
+以及核心的**"开播与下播各自成窗"**：3 开播 + 3 下播交错 → 恰好两条通知（各 3 位），
+不是把 6 位混成一条。
+
+#### ⑤ 顺带修掉的两处口径问题
+
+- **全新安装的种子 SQL**（`AppDatabase` 里那两条 `INSERT OR IGNORE`）也是显式列清单：
+  只加实体列而不加种子列，会让新装设备的种子行依赖 DDL 默认值 —— 能跑，但与既有
+  `circuitBreakerEnabled` 的显式写法不一致、以后容易漏改。本次已同步补上，
+  并在 `CircuitBreakerConfigTest` 的种子测试里加了断言（列在、值为 1）。
+- 诊断包 `config.json` 与 `MIGRATION_PAIRS` 同步：新增 `endAggregationEnabled` 字段与 `10 to 11`。
+
+#### ⑥ 未验证 / 边界
+
+- 下播合并的**点击落点**沿用既有深链解析（`agg:` 事件键 → 首个绑定事件 → 下播分支 → 直播历史页），
+  本轮只在代码层核对了 `isOfflineEvent` 已把 `BATCH_END` 并入下播类，**没有在真机上点过这条通知**。
+- 开播与下播的窗口时长共用 `aggregationWindowSeconds`（默认 5 秒、界面无入口，属既有状况）。
+
+---
+
+---
+
 ### H75. 订正：`SYSTEM_ALERT_WINDOW`「仅持有即豁免」是错的（实测推翻）+ root 代启动实测通过
 
 #### ① 起因

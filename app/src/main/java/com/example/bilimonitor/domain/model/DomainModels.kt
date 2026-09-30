@@ -134,6 +134,13 @@ data class MonitoringConfigSnapshot(
      */
     val circuitBreakerEnabled: Boolean = true,
     val aggregationEnabled: Boolean,
+    /**
+     * 批量**下播**合并开关（v11，默认 **true**）。
+     *
+     * 与 [aggregationEnabled] 各自成窗、阈值共用 [aggregationThreshold]。
+     * 带默认值：让新增参数不破坏既有构造点（与 [circuitBreakerEnabled] 同一写法）。
+     */
+    val endAggregationEnabled: Boolean = true,
     val aggregationThreshold: Int,
     val aggregationWindowSeconds: Int,
     val batchCooldownSeconds: Int,

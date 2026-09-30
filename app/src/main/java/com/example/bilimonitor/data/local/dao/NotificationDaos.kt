@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import com.example.bilimonitor.data.local.NotificationAggregateKind
 import com.example.bilimonitor.data.local.NotificationAggregateStatus
 import com.example.bilimonitor.data.local.NotificationHistoryDeliveryStatus
 import com.example.bilimonitor.data.local.NotificationOutboxStatus
@@ -435,8 +436,8 @@ interface NotificationIdRegistryDao {
 
 @Dao
 interface NotificationAggregateDao {
-    @Query("SELECT * FROM notification_aggregate WHERE bootId = :bootId AND status IN ('COLLECTING','READY') LIMIT 1")
-    suspend fun findInProgress(bootId: String): NotificationAggregateEntity?
+    @Query("SELECT * FROM notification_aggregate WHERE bootId = :bootId AND aggregateKind = :kind AND status IN ('COLLECTING','READY') LIMIT 1")
+    suspend fun findInProgress(bootId: String, kind: NotificationAggregateKind): NotificationAggregateEntity?
 
     @Query("SELECT * FROM notification_aggregate WHERE status IN ('COLLECTING','READY')")
     suspend fun listInProgress(): List<NotificationAggregateEntity>

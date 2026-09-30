@@ -193,6 +193,23 @@ fun SettingsScreen(
                         onCheckedChange = { viewModel.update { s -> s.copy(aggregationEnabled = it) } }
                     )
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("批量下播合并通知", fontWeight = FontWeight.Medium)
+                        Text(
+                            // 与开播方向同一套语义（阈值 = 触发条件），并点明两者互相独立：
+                            // 它们各自一个聚合窗口，同一批里既有开播又有下播也不会串在一起。
+                            "同一批（几秒内）下播的主播「超过」下面的阈值时，把这一批「全部」合并成一条通知；" +
+                                "与开播合并各自成窗、互不影响",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = config?.endAggregationEnabled ?: true,
+                        onCheckedChange = { viewModel.update { s -> s.copy(endAggregationEnabled = it) } }
+                    )
+                }
                 StepperSetting(
                     // 措辞与开关说明一致：阈值 = "超过多少位就合并"，不是"每次合并多少位"。
                     label = "超过 ${config?.aggregationThreshold ?: 4} 位主播需要通知时合并" +

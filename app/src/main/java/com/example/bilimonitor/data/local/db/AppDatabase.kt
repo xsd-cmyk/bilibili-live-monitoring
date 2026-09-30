@@ -157,7 +157,7 @@ abstract class AppDatabase : RoomDatabase() {
          * v10 = 新增「熔断总开关」`circuitBreakerEnabled`（默认 true，保持既有行为），
          * 见 [AppMigrations.V9_10__circuitBreakerSwitch]。
          */
-        const val DB_VERSION = 10
+        const val DB_VERSION = 11
     }
 }
 
@@ -283,14 +283,16 @@ object DbSeed {
                 circuitBreakerRecoverySeconds, aggregationEnabled, aggregationThreshold, aggregationWindowSeconds,
                 batchCooldownSeconds, freshnessStaleSeconds, backgroundKeepAliveChoice, noGuaranteeAcknowledged,
                 noGuaranteeAcknowledgedAt, startConfirmationCount, endConfirmationCount, placeholderText,
-                retryFailureRatioPercent, banRecheckIntervalSeconds, circuitBreakerEnabled, updatedAt
+                retryFailureRatioPercent, banRecheckIntervalSeconds, circuitBreakerEnabled,
+                endAggregationEnabled, updatedAt
             ) VALUES (
                 1, 1, 1, 'POWER_SAVING', 60, 50, 4,
                 8, 2, 5, 60, 3,
                 60, 1, 4, 5,
                 5, 300, 'UNSET', 0,
                 NULL, 1, 1, '[待获取]',
-                50, 1800, 1, $now)  -- 新装默认：intervalSeconds=60、timeoutSeconds=8、batchCooldownSeconds=5、retryFailureRatioPercent=50、banRecheckIntervalSeconds=1800、circuitBreakerEnabled=1；INSERT OR IGNORE ⇒ 老库既有值一律不动（endConfirmationCount=1 同此理）
+                50, 1800, 1,
+                1, $now)  -- 新装默认：intervalSeconds=60、timeoutSeconds=8、batchCooldownSeconds=5、retryFailureRatioPercent=50、banRecheckIntervalSeconds=1800、circuitBreakerEnabled=1、endAggregationEnabled=1（v11 批量下播合并）；INSERT OR IGNORE ⇒ 老库既有值一律不动（endConfirmationCount=1 同此理）
             """.trimIndent()
         )
         db.execSQL(
@@ -301,14 +303,16 @@ object DbSeed {
                 circuitBreakerRecoverySeconds, aggregationEnabled, aggregationThreshold, aggregationWindowSeconds,
                 batchCooldownSeconds, freshnessStaleSeconds, backgroundKeepAliveChoice, noGuaranteeAcknowledged,
                 noGuaranteeAcknowledgedAt, startConfirmationCount, endConfirmationCount, placeholderText,
-                retryFailureRatioPercent, banRecheckIntervalSeconds, circuitBreakerEnabled, createdAt
+                retryFailureRatioPercent, banRecheckIntervalSeconds, circuitBreakerEnabled,
+                endAggregationEnabled, createdAt
             ) VALUES (
                 1, 1, 'POWER_SAVING', 60, 50, 4,
                 8, 2, 5, 60, 3,
                 60, 1, 4, 5,
                 5, 300, 'UNSET', 0,
                 NULL, 1, 1, '[待获取]',
-                50, 1800, 1, $now)  -- 同上：修订快照与当前值必须同口径
+                50, 1800, 1,
+                1, $now)  -- 同上：修订快照与当前值必须同口径（含 v11 的 endAggregationEnabled）
             """.trimIndent()
         )
     }

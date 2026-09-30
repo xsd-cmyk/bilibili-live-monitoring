@@ -9,6 +9,7 @@ import com.example.bilimonitor.data.local.AppError
 import com.example.bilimonitor.data.local.DeliveryAttemptResult
 import com.example.bilimonitor.data.local.LiveEventType
 import com.example.bilimonitor.data.local.MonitorHealthStatus
+import com.example.bilimonitor.data.local.NotificationAggregateKind
 import com.example.bilimonitor.data.local.NotificationAggregateStatus
 import com.example.bilimonitor.data.local.NotificationEventType
 import com.example.bilimonitor.data.local.NotificationHistoryDeliveryStatus
@@ -26,6 +27,15 @@ data class NotificationAggregateEntity(
     val windowStartElapsed: Long,
     val windowEndElapsed: Long,
     val bootId: String,
+    /**
+     * 窗口方向（v11 新增列，`DEFAULT 'LIVE'`）。
+     *
+     * 老库升级时已有的进行中窗口一律落成 LIVE（那时只有开播方向会聚合），语义正确。
+     * `DEFAULT 'LIVE'` 与 [com.example.bilimonitor.data.local.db.AppMigrations.V10_11__aggregateKindAndEndAggregation]
+     * 的 DDL 必须逐字一致，否则迁移后的全量 schema 校验会直接报错（开库即崩）。
+     */
+    @androidx.room.ColumnInfo(defaultValue = "LIVE")
+    val aggregateKind: NotificationAggregateKind = NotificationAggregateKind.LIVE,
     val threshold: Int,
     /** 派生缓存；权威值 = COUNT(notification_aggregate_event)（0.6.9.1）。 */
     val eventCount: Int,

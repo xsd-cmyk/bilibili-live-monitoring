@@ -53,6 +53,13 @@ data class StreamerNotificationPolicy(
     val notifyStart: Boolean,
     val notifyEnd: Boolean,
     val aggregationEnabled: Boolean,
+    /**
+     * 批量**下播**合并开关（v11，默认 true）。
+     *
+     * 与 [aggregationEnabled] 各自一个聚合窗口、阈值共用 [aggregationThreshold]；
+     * 带默认值让新增参数不破坏既有构造点（与 `circuitBreakerEnabled` 同一写法）。
+     */
+    val endAggregationEnabled: Boolean = true,
     val aggregationThreshold: Int,
     val aggregationWindowSeconds: Int,
     /** 直播标题变化通知（默认关闭，用户显式开启才发）。 */
@@ -1283,7 +1290,13 @@ class MonitorRepository @Inject constructor(
             url = streamer.liveUrl,
             cover = null
         )
-        // 关播通知不走聚合（批量开播聚合只针对 LIVE 方向）。
+        // ★ v11：关播**也可以**合并（用户要求：在通知合并那里新增「批量下播合并通知」）。
+        //   判定语义与开播方向**逐字一致** —— 同一批内超过阈值就把这一批全部合并成一条
+        //   （NotificationAggregationPolicy.shouldMergeAll，严格大于）。
+        //   但窗口是**分开的**（NotificationAggregateKind.END）：同一时刻开播与下播各有一个窗口，
+        //   所以一个突发里既有开播又有下播时，不会串成一条语义错误的通知
+        //   （"N 位主播正在直播"里混进已经下播的人）。
+        //   关掉该开关时，仍然走原来的逐条单发。
         // 免打扰时段同样抑制关播通知：场次照常关闭，只是不打扰用户（原规范 22.3）。
         // ★ 两个"不发"的原因必须分开处理（2026 复查）：主播开关是**用户自己的设置**，
         //   不需要留痕；免打扰是**系统替他做的抑制**，必须留一条痕，否则"昨晚主播下播
@@ -1300,13 +1313,23 @@ class MonitorRepository @Inject constructor(
             )
             return
         }
-        NotificationOutboxWriter.createSingle(
-            db = db, clock = clock,
-            event = event, streamerId = streamer.id,
-            eventType = com.example.bilimonitor.data.local.NotificationEventType.END_CONFIRMED,
-            payloadJson = payload, now = now,
-            enabled = true, configVersion = configVersion
-        )
+        if (policy.endAggregationEnabled && policy.aggregationThreshold >= 1) {
+            // 走聚合窗口：窗口关闭时按"是否超过阈值"决定合并成一条还是逐条发
+            NotificationOutboxWriter.createForEvent(
+                db = db, clock = clock,
+                event = event, streamerId = streamer.id,
+                payloadJson = payload, policy = policy, configVersion = configVersion, now = now,
+                eventType = com.example.bilimonitor.data.local.NotificationEventType.END_CONFIRMED
+            )
+        } else {
+            NotificationOutboxWriter.createSingle(
+                db = db, clock = clock,
+                event = event, streamerId = streamer.id,
+                eventType = com.example.bilimonitor.data.local.NotificationEventType.END_CONFIRMED,
+                payloadJson = payload, now = now,
+                enabled = true, configVersion = configVersion
+            )
+        }
     }
 
     /**

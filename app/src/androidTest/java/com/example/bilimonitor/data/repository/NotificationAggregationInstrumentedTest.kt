@@ -21,7 +21,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * 通知合并阈值的**行为**验证（真 Room 库 + 真实事务路径）。
+ * 通知合并阈值的**行为**验证（真 Room 库 + 真实事务路径）—— 开播与下播两个方向都覆盖。
  *
  * ## 为什么要 instrumented
  * 这次改动改的是"聚合窗口什么时候定案"：单测能钉住判定规则（见
@@ -98,9 +98,7 @@ class NotificationAggregationInstrumentedTest {
         assertEquals("窗口未关闭前也不该有单事件通知", 0, singleCount())
 
         // 推进到窗口之外（窗口 5 秒），再走真实的窗口结算路径
-        elapsed += 10_000
-        wall += 10_000
-        repository.processWindowEnds()
+        closeWindow()
 
         assertEquals("超过阈值 → 恰好一条合并通知", 1, batchCount())
         assertEquals("合并之后不该再逐条单发", 0, singleCount())
@@ -165,6 +163,79 @@ class NotificationAggregationInstrumentedTest {
         assertEquals("应当是单事件通知", 1, singleCount())
     }
 
+    // ---------------------------------------------------------------- 下播方向（v11）
+
+    @Test
+    fun 超过阈值时把这一批下播合并成一条_且类型是下播() = runBlocking {
+        val threshold = 4
+        val count = 6
+        val policy = policy(threshold)
+        repeat(count) { index -> bindEnd(seedEndEvent(index), policy) }
+
+        assertEquals("窗口未关闭前不得发出下播合并通知", 0, batchCount())
+        closeWindow()
+
+        assertEquals("超过阈值 → 恰好一条下播合并通知", 1, batchCount(eventType = "BATCH_END"))
+        assertEquals("开播方向不该被牵动", 0, batchCount(eventType = "BATCH_LIVE"))
+        assertEquals("合并之后不该再逐条单发", 0, singleCount())
+        val payload = NotificationPayloads.decodeBatch(batchPayload(eventType = "BATCH_END"))
+        assertEquals("必须包含全部 $count 位下播主播", count, payload?.items?.size)
+        assertEquals(
+            "payload 必须标记方向（渲染文案靠它区分「正在直播」与「已下播」）",
+            "END", payload?.kind
+        )
+    }
+
+    @Test
+    fun 下播正好等于阈值时逐条单发() = runBlocking {
+        val threshold = 4
+        val policy = policy(threshold)
+        repeat(threshold) { index -> bindEnd(seedEndEvent(index), policy) }
+
+        closeWindow()
+
+        assertEquals("正好等于阈值 → 不合并", 0, batchCount())
+        assertEquals("应当逐个单独发 $threshold 条", threshold, singleCount())
+    }
+
+    @Test
+    fun 关掉下播合并开关时仍然逐条单发() = runBlocking {
+        val policy = policy(4).copy(endAggregationEnabled = false)
+        repeat(6) { index -> bindEnd(seedEndEvent(index), policy) }
+
+        closeWindow()
+
+        assertEquals("开关关掉就不该有下播合并", 0, batchCount(eventType = "BATCH_END"))
+        assertEquals("应当是 6 条单发", 6, singleCount())
+    }
+
+    @Test
+    fun 开播与下播各自成窗_同一个突发里不会串成一条() = runBlocking {
+        val threshold = 2
+        val policy = policy(threshold)
+
+        // 3 位主播"先开播、后下播"，两件事交错出现在同一个时间窗内（复用同一批主播与场次）
+        repeat(3) { index ->
+            val start = seedEvent(index)
+            NotificationOutboxWriter.createForEvent(
+                db = db, clock = clock, event = start, streamerId = start.streamerId,
+                payloadJson = payloadOf(start), policy = policy, configVersion = 1L, now = clock.nowWall()
+            )
+            bindEnd(seedEndEventFor(start, index), policy)
+        }
+        closeWindow()
+
+        // ★ 核心断言：两个方向各自一个窗口、各自一条通知；不会把"谁开播"和"谁下播"混在一起
+        assertEquals("开播方向一条", 1, batchCount(eventType = "BATCH_LIVE"))
+        assertEquals("下播方向一条", 1, batchCount(eventType = "BATCH_END"))
+        assertEquals("两条通知各自 3 位（不是把 6 位混成一条）",
+            3, NotificationPayloads.decodeBatch(batchPayload(eventType = "BATCH_LIVE"))?.items?.size)
+        assertEquals(
+            3, NotificationPayloads.decodeBatch(batchPayload(eventType = "BATCH_END"))?.items?.size
+        )
+        assertEquals("两个方向都合并了，不该有单发", 0, singleCount())
+    }
+
     // ---------------------------------------------------------------- 造数据
 
     private fun policy(threshold: Int) = StreamerNotificationPolicy(
@@ -174,6 +245,55 @@ class NotificationAggregationInstrumentedTest {
         aggregationThreshold = threshold,
         aggregationWindowSeconds = 5
     )
+
+    /**
+     * 给**已经存在的**开播事件配一个下播事件（同一个主播、同一场）。
+     *
+     * ★ 必须复用主播与场次：真实场景里 END 属于"刚下播的那个主播"，
+     *   而且 `streamer.uid` 上有唯一约束 —— 重复建主播会直接 SQLITE_CONSTRAINT_UNIQUE
+     *   （这条是测试自己踩出来的：一开始给同一个序号又建了一个主播）。
+     */
+    private suspend fun seedEndEventFor(start: LiveEventEntity, index: Int): LiveEventEntity {
+        val end = LiveEventEntity(
+            eventId = "evt-test-end-$index",
+            streamerId = start.streamerId,
+            streamerStableId = start.streamerStableId,
+            sessionStableId = start.sessionStableId,
+            eventType = LiveEventType.END,
+            eventConfirmedAt = clock.nowWall(),
+            eventSequence = 100L + index,
+            observationSequence = 1L,
+            monitorGeneration = 1L,
+            streamerMonitorGeneration = 1L,
+            fencingToken = null,
+            transitionId = null,
+            configVersion = 1L,
+            createdAt = clock.nowWall()
+        )
+        db.liveEventDao().insert(end)
+        return end
+    }
+
+    /** 造"独立主播的下播事件"（自己的主播 + 场次），供只看下播方向的用例使用。 */
+    private suspend fun seedEndEvent(index: Int): LiveEventEntity =
+        seedEndEventFor(seedEvent(index), index)
+
+    /** 走真实写入路径把下播事件投进聚合窗口（与 MonitorRepository 的调用方式一致）。 */
+    private suspend fun bindEnd(event: LiveEventEntity, policy: StreamerNotificationPolicy) {
+        NotificationOutboxWriter.createForEvent(
+            db = db, clock = clock, event = event, streamerId = event.streamerId,
+            payloadJson = payloadOf(event),
+            policy = policy, configVersion = 1L, now = clock.nowWall(),
+            eventType = com.example.bilimonitor.data.local.NotificationEventType.END_CONFIRMED
+        )
+    }
+
+    /** 推进到窗口之外，再走真实的窗口结算路径。 */
+    private suspend fun closeWindow() {
+        elapsed += 10_000
+        wall += 10_000
+        repository.processWindowEnds()
+    }
 
     private suspend fun seedEvent(index: Int): LiveEventEntity {
         val streamerId = db.streamerDao().insert(
@@ -242,14 +362,28 @@ class NotificationAggregationInstrumentedTest {
 
     // ---------------------------------------------------------------- 断言工具
 
-    private fun batchCount(): Int =
-        countOf("SELECT COUNT(*) FROM notification_outbox WHERE aggregateId IS NOT NULL")
+    private fun batchCount(eventType: String? = null): Int =
+        if (eventType == null) {
+            countOf("SELECT COUNT(*) FROM notification_outbox WHERE aggregateId IS NOT NULL")
+        } else {
+            countOf(
+                "SELECT COUNT(*) FROM notification_outbox " +
+                    "WHERE aggregateId IS NOT NULL AND eventType = '$eventType'"
+            )
+        }
 
     private fun singleCount(): Int =
         countOf("SELECT COUNT(*) FROM notification_outbox WHERE aggregateId IS NULL")
 
-    private fun batchPayload(): String =
-        stringOf("SELECT payloadJson FROM notification_outbox WHERE aggregateId IS NOT NULL LIMIT 1")
+    private fun batchPayload(eventType: String? = null): String =
+        if (eventType == null) {
+            stringOf("SELECT payloadJson FROM notification_outbox WHERE aggregateId IS NOT NULL LIMIT 1")
+        } else {
+            stringOf(
+                "SELECT payloadJson FROM notification_outbox " +
+                    "WHERE aggregateId IS NOT NULL AND eventType = '$eventType' LIMIT 1"
+            )
+        }
 
     private fun countOf(sql: String): Int = query(sql) { if (it.moveToFirst()) it.getInt(0) else -1 }
 

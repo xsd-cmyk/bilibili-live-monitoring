@@ -23,6 +23,7 @@ import com.example.bilimonitor.data.local.LiveSessionOrigin
 import com.example.bilimonitor.data.local.MaintenanceMode
 import com.example.bilimonitor.data.local.MonitorHealthStatus
 import com.example.bilimonitor.data.local.MonitoringMode
+import com.example.bilimonitor.data.local.NotificationAggregateKind
 import com.example.bilimonitor.data.local.NotificationAggregateStatus
 import com.example.bilimonitor.data.local.NotificationEventType
 import com.example.bilimonitor.data.local.NotificationHistoryDeliveryStatus
@@ -218,6 +219,10 @@ class DshTypeConverters {
     @TypeConverter fun toRestoreFinishReason(v: String?): RestoreFinishReason? =
         EnumSafe.parse(RestoreFinishReason.values(), v, RestoreFinishReason.FAILED)
     @TypeConverter fun fromRestoreFinishReason(v: RestoreFinishReason?): String? = v?.name
+
+    @TypeConverter fun toNotificationAggregateKind(v: String?): NotificationAggregateKind? =
+        EnumSafe.parse(NotificationAggregateKind.values(), v, NotificationAggregateKind.LIVE)
+    @TypeConverter fun fromNotificationAggregateKind(v: NotificationAggregateKind?): String? = v?.name
 
     @TypeConverter fun toNotificationAggregateStatus(v: String?): NotificationAggregateStatus? =
         EnumSafe.parse(NotificationAggregateStatus.values(), v, NotificationAggregateStatus.EXPIRED)

@@ -64,7 +64,7 @@ enum class AppError {
  *   `BAN_ENTERED` / `BAN_LIFTED` 是 2026 复查新增的"封禁状态变化"通知
  *   （此前封禁只写 audit_log，用户在通知栏里看不到任何东西）。
  */
-enum class NotificationEventType { START_CONFIRMED, LIVE_RECONFIRMED, END_CONFIRMED, BATCH_LIVE, SYSTEM_PROBLEM, SYSTEM_RECOVERED, TITLE_CHANGED, AREA_CHANGED, BAN_ENTERED, BAN_LIFTED }
+enum class NotificationEventType { START_CONFIRMED, LIVE_RECONFIRMED, END_CONFIRMED, BATCH_LIVE, SYSTEM_PROBLEM, SYSTEM_RECOVERED, TITLE_CHANGED, AREA_CHANGED, BAN_ENTERED, BAN_LIFTED, BATCH_END }
 
 enum class LiveEventType { START, END, LIVE_RECONFIRMED }
 
@@ -80,6 +80,15 @@ enum class BackupScopeType { ALL_DATA, SELECTED_STREAMERS, SINGLE_STREAMER, DATE
 enum class RestoreFinishReason { COMPLETED, FAILED, CANCELLED, REJECTED, PARTIAL_WITH_WARNING }
 
 enum class NotificationAggregateStatus { COLLECTING, READY, FROZEN, DISPATCHED, CANCELLED, EXPIRED }
+
+/**
+ * 聚合窗口的**方向**（v11 新增）：开播与下播各自成窗。
+ *
+ * 为什么必须分开：一个突发里可能既有开播又有下播，混在一个窗口里只能发出一条语义错误的
+ * 通知（"N 位主播正在直播"里混进了已经下播的主播）。分开之后，两个方向的阈值判定各自独立、
+ * 文案各自自洽；用户也能分别开关（开播合并 / 下播合并）。
+ */
+enum class NotificationAggregateKind { LIVE, END }
 
 enum class NotificationOutboxStatus { PENDING, PROCESSING, DELIVERY_UNKNOWN, SENT, RETRY_WAIT, FAILED, EXPIRED, CANCELLED }
 

@@ -97,9 +97,11 @@ object AppMigrations {
         "idx_outbox_one_per_source_event" to
             ("CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_one_per_source_event " +
                 "ON notification_outbox(sourceEventId) WHERE sourceEventId IS NOT NULL"),
+        // v11：唯一键从 (bootId) 放宽为 (bootId, aggregateKind) ——
+        // 开播与下播各自一个进行中窗口，同一方向仍然只允许一个。
         "idx_aggregate_one_in_progress" to
             ("CREATE UNIQUE INDEX IF NOT EXISTS idx_aggregate_one_in_progress " +
-                "ON notification_aggregate(bootId) WHERE status IN ('COLLECTING','READY')"),
+                "ON notification_aggregate(bootId, aggregateKind) WHERE status IN ('COLLECTING','READY')"),
         "idx_aggregate_event_one_active" to
             ("CREATE UNIQUE INDEX IF NOT EXISTS idx_aggregate_event_one_active " +
                 "ON notification_aggregate_event(eventId) WHERE active = 1"),
@@ -366,6 +368,33 @@ object AppMigrations {
         }
     }
 
+    /**
+     * v11：聚合窗口加"方向"列（开播 / 下播各自成窗）；配置表加"批量下播合并"开关。
+     *
+     * 两处都必须给老行确定的默认值（否则迁移后 Room 的全量 schema 校验会报
+     * "Migration didn't properly handle ..."，开库即崩）：
+     *  · `aggregateKind DEFAULT 'LIVE'` —— 那时只有开播方向会聚合，老窗口落成 LIVE 语义正确；
+     *  · `endAggregationEnabled DEFAULT 1` —— 全新安装与升级后的默认行为都"开着"，
+     *    与本功能引入前的差异只有"下播也会合并"，而这正是本次要加的能力。
+     *
+     * ★ 首行的 `dropPartialIndexes(db)` 不能省：`idx_aggregate_one_in_progress` 的定义变了，
+     *   而它是 `CREATE UNIQUE INDEX IF NOT EXISTS` —— 老索引不先删掉就永远不会被替换。
+     */
+    val V10_11__aggregateKindAndEndAggregation = object : Migration(10, 11) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            dropPartialIndexes(db)
+            db.execSQL(
+                "ALTER TABLE notification_aggregate ADD COLUMN aggregateKind TEXT NOT NULL DEFAULT 'LIVE'"
+            )
+            db.execSQL(
+                "ALTER TABLE monitoring_config ADD COLUMN endAggregationEnabled INTEGER NOT NULL DEFAULT 1"
+            )
+            db.execSQL(
+                "ALTER TABLE monitoring_config_revision ADD COLUMN endAggregationEnabled INTEGER NOT NULL DEFAULT 1"
+            )
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         V1_2__createPendingIndexes,
         V2_3__defaultInterval180,
@@ -375,6 +404,7 @@ object AppMigrations {
         V6_7__sessionAreas,
         V7_8__notificationChangeSwitches,
         V8_9__failureRatioAndBanRecheck,
-        V9_10__circuitBreakerSwitch
+        V9_10__circuitBreakerSwitch,
+        V10_11__aggregateKindAndEndAggregation
     )
 }
