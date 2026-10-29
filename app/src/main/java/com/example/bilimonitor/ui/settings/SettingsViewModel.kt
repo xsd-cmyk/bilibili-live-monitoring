@@ -194,6 +194,7 @@ class SettingsViewModel @Inject constructor(
      */
     val wakelockHeld: StateFlow<Boolean> =
         com.example.bilimonitor.background.MonitoringService.isWakelockHeld
+    val wakelockStatus = com.example.bilimonitor.background.MonitoringService.wakelockStatus
 
     /**
      * 电源豁免状态（免 root 加固）。

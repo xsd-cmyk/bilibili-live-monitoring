@@ -12,6 +12,7 @@ import com.example.bilimonitor.data.local.entity.MonitoringGapEntity
 import com.example.bilimonitor.data.local.entity.ProblemStateEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.flatMapLatest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,8 +26,8 @@ data class OverallHealth(
     val detail: String?,
     val keepAliveChoice: BackgroundKeepAliveChoice,
     val monitoringEnabled: Boolean,
-    val monitoredCount: Int,
-    val liveCount: Int,
+    val monitoredCount: Int?,
+    val liveCount: Int?,
     /**
      * 「封禁中」的主播数（用户诉求：与"监控中 N 位 / 其中 M 位在播"并列展示）。
      *
@@ -34,7 +35,7 @@ data class OverallHealth(
      *   也不影响 [monitoredCount]（被封禁的主播仍然"在监控列表里"，只是请求被服务端拒绝）。
      *   它也不改变 [status]（封禁是**局部**事实，一个房间被封禁不代表监控整体降级）。
      */
-    val bannedCount: Int = 0,
+    val bannedCount: Int? = 0,
     val openSystemGap: MonitoringGapEntity?,
     val activeProblems: List<ProblemStateEntity>,
     val foregroundServiceRunning: Boolean = false
@@ -49,6 +50,7 @@ class HealthRepository @Inject constructor(
     private val monitoringGapDao: MonitoringGapDao,
     private val problemDao: ProblemDao,
     private val clock: AppClock,
+    private val logDao: com.example.bilimonitor.data.local.dao.LogDao,
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context
 ) {
 
@@ -77,10 +79,11 @@ class HealthRepository @Inject constructor(
             accessibilityEnabled
         ) { config, gap, problems, serviceRunning, accessibilityOn ->
             Quintuple(config, gap, problems, serviceRunning, accessibilityOn)
-        }.let { flow ->
+        }.let { base ->
+            val flow = combine(base, streamerDao.observeHealthGroups()) { state, groups -> state to groups }
             kotlinx.coroutines.flow.flow {
-                flow.collect { (config, gap, problems, serviceRunning, accessibilityOn) ->
-                    val streamers = runCatching { streamerDao.listMonitorable() }.getOrDefault(emptyList())
+                flow.collect { (state, streamers) ->
+                    val (config, gap, problems, serviceRunning, accessibilityOn) = state
                     // 健康中心「监控状态」里的**在播主播数**（分子）：只统计确认状态为 LIVE 的主播。
                     // ★ 用户定稿：轮播（ROUND）按**未开播**处理，因此不计数 ——
                     //   原实现写成 `LIVE || ROUND`，与 MonitoringEngine.publishCounts 里
@@ -89,17 +92,17 @@ class HealthRepository @Inject constructor(
                     //   这条口径已在两处统一为"只认 LIVE"，改动前请先确认 MonitoringEngine 那处，
                     //   不要只把其中一处改回 `LIVE || ROUND`（那会让两处再次矛盾）。
                     // 注意分母是下面的 monitoredCount = streamers.size（所有在监控的主播，含轮播与未开播）。
-                    val liveCount = streamers.count {
+                    val liveCount = streamers.filter {
                         it.confirmedLiveStatus == com.example.bilimonitor.data.local.ConfirmedLiveStatus.LIVE
-                    }
+                    }.sumOf { it.count }
                     // 「封禁中」计数：解 `streamer.lastError` 里的封禁标记（RoomBanCodec）。
                     // 为什么从 lastError 派生而不是加列：见 RoomBanCodec 的说明 ——
                     // 零 schema 改动、零迁移风险，且备份（整行导出）自动带上。
                     // `RoomBanCodec.decode` 对任何解析失败都返回 null，因此一段普通错误文本
                     // **不会**被算成封禁（宁可少算，也不虚报）。
-                    val bannedCount = streamers.count {
+                    val bannedCount = streamers.filter {
                         com.example.bilimonitor.domain.policy.RoomBanCodec.decode(it.lastError) != null
-                    }
+                    }.sumOf { it.count }
                     val choice = config?.backgroundKeepAliveChoice ?: BackgroundKeepAliveChoice.UNSET
                     // 保活方式可叠加（用户要求）：分别判断"这一项要不要"，而不是拿枚举做等值比较
                     val wantsForeground = com.example.bilimonitor.background.MonitoringController
@@ -157,7 +160,7 @@ class HealthRepository @Inject constructor(
                             detail = gap?.reason?.name,
                             keepAliveChoice = choice,
                             monitoringEnabled = enabled,
-                            monitoredCount = streamers.size,
+                            monitoredCount = streamers.sumOf { it.count },
                             liveCount = liveCount,
                             bannedCount = bannedCount,
                             openSystemGap = gap,
@@ -167,6 +170,20 @@ class HealthRepository @Inject constructor(
                     )
                 }
             }
+        }.retryWhen { error, _ ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            try {
+                logDao.insertAppError(com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                    com.example.bilimonitor.core.Ids.newId(), null, clock.nowWall(),
+                    com.example.bilimonitor.data.local.AppError.DATABASE_ERROR,
+                    "健康状态读取失败：${error.message}".take(500)))
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { android.util.Log.e("HealthRepository", "无法记录健康状态读取错误", e) }
+            emit(OverallHealth(MonitorHealthStatus.DEGRADED, "健康状态暂时无法读取", error.message,
+                BackgroundKeepAliveChoice.UNSET, false, null, null, null, null, emptyList(),
+                com.example.bilimonitor.background.MonitoringService.isRunning.value))
+            kotlinx.coroutines.delay(30_000)
+            true
         }
 
     private fun gapReasonLabel(reason: String): String = when (reason) {

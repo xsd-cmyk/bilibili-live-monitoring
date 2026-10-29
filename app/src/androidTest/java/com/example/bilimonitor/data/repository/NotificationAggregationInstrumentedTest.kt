@@ -13,7 +13,10 @@ import com.example.bilimonitor.data.local.db.AppDatabase
 import com.example.bilimonitor.data.local.db.AppDatabaseFactory
 import com.example.bilimonitor.data.local.entity.LiveEventEntity
 import com.example.bilimonitor.data.local.entity.StreamerEntity
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
+import androidx.room.withTransaction
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -359,6 +362,391 @@ class NotificationAggregationInstrumentedTest {
         url = null,
         cover = null
     )
+
+    @Test
+    fun 批量下播始终进入批次列表_不依赖仍活跃的绑定() = runBlocking {
+        val p = policy(1)
+        bindEnd(seedEndEvent(0), p)
+        bindEnd(seedEndEvent(1), p)
+        closeWindow()
+        val row = db.notificationOutboxDao().findDue(wall, 20).single()
+        val resolver = notificationResolver()
+        org.junit.Assert.assertTrue(resolver.resolve(row.eventKey) is NotificationDeepLinkResolver.Target.Batch)
+        db.notificationAggregateDao().releaseAll(row.aggregateId!!, wall)
+        val details = resolver.batchDetails(row.eventKey)!!
+        org.junit.Assert.assertTrue(details.isEnd)
+        assertEquals(2, details.members.size)
+    }
+
+    @Test
+    fun 下播通知携带场次_清理原事件后仍可用点击快照定位() = runBlocking {
+        val event = seedEndEvent(0)
+        val row = createSingleFor(event, com.example.bilimonitor.data.local.NotificationEventType.END_CONFIRMED)
+        val hint = com.example.bilimonitor.notify.NotificationClickHint(row.eventKey, row.eventType,
+            event.streamerStableId, event.sessionStableId).encode()
+        val target = notificationResolver().resolve(row.eventKey) as NotificationDeepLinkResolver.Target.StreamerHistory
+        assertEquals(event.sessionStableId, target.sessionStableId)
+        db.notificationOutboxDao().deleteByOutboxIds(listOf(row.outboxId))
+        db.openHelper.writableDatabase.execSQL("DELETE FROM live_event WHERE eventId = ?", arrayOf(event.eventId))
+        val fallback = notificationResolver().resolve(row.eventKey, hint) as NotificationDeepLinkResolver.Target.StreamerHistory
+        assertEquals(event.streamerId, fallback.streamerId)
+        assertEquals(event.sessionStableId, fallback.sessionStableId)
+    }
+
+    @Test
+    fun 不同事件即使哈希碰撞也拥有不同的PendingIntent() = runBlocking {
+        val row = createSingleFor(seedEvent(0), com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+        assertEquals("Aa".hashCode(), "BB".hashCode())
+        val poster = com.example.bilimonitor.notify.NotificationPoster(context, clock)
+        val a = poster.contentIntent(row.copy(eventKey = "Aa", notificationId = 4242), null)
+        val b = poster.contentIntent(row.copy(eventKey = "BB", notificationId = 4242), null)
+        try { org.junit.Assert.assertNotEquals(a, b) }
+        finally { a.cancel(); b.cancel() }
+    }
+
+    @Test
+    fun 调度依据最早到期时间_在途租约使用同次开机的单调时钟() = runBlocking {
+        val row = createSingleFor(seedEvent(0), com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+        val dao = db.notificationOutboxDao()
+        assertEquals(0L, dao.nextDeliveryDelay(wall, elapsed, clock.bootId()))
+        dao.awaitObservation(row.outboxId, wall + 30_000)
+        assertEquals(30_000L, dao.nextDeliveryDelay(wall, elapsed, clock.bootId()))
+        wall += 30_000
+        elapsed += 30_000
+        assertEquals(1, dao.claimOutbox(row.outboxId, wall, wall + 30_000, elapsed + 30_000,
+            clock.bootId(), "test-worker", "attempt"))
+        assertEquals(30_000L, dao.nextDeliveryDelay(wall + 3_600_000, elapsed, clock.bootId()))
+    }
+
+    @Test
+    fun 旧事件延后入队不能重新获得提醒有效期() = runBlocking {
+        val event = seedEvent(0)
+        db.openHelper.writableDatabase.execSQL("UPDATE live_event SET eventConfirmedAt = ? WHERE eventId = ?",
+            arrayOf(wall - 25 * 60 * 60 * 1000L, event.eventId))
+        val old = db.liveEventDao().findById(event.eventId)!!
+        val row = createSingleFor(old, com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+        withDeliveryGuard { guard ->
+            val result = guard.prepare(row) as com.example.bilimonitor.background.NotificationDeliveryGuard.Result.Skip
+            assertEquals("NOTIFICATION_STALE", result.reason)
+        }
+    }
+
+    @Test
+    fun 场次已结束时不补发正在直播通知() = runBlocking {
+        val event = seedEvent(0)
+        seedSession(event)
+        val row = createSingleFor(event, com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+        db.openHelper.writableDatabase.execSQL("UPDATE live_session SET endTime = ? WHERE stableId = ?",
+            arrayOf(wall + 1000, event.sessionStableId))
+        withDeliveryGuard { guard ->
+            val result = guard.prepare(row) as com.example.bilimonitor.background.NotificationDeliveryGuard.Result.Skip
+            assertEquals("STATE_SUPERSEDED", result.reason)
+        }
+    }
+
+    @Test
+    fun 批量发送前过滤失效成员_人数与载荷同步变化() = runBlocking {
+        val p = policy(1)
+        repeat(2) { index ->
+            val event = seedEvent(index)
+            seedSession(event)
+            NotificationOutboxWriter.createForEvent(db, clock, event, event.streamerId, payloadOf(event), p, 1, wall)
+        }
+        closeWindow()
+        val row = db.notificationOutboxDao().findDue(wall, 20).single()
+        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET confirmedLiveStatus = 'OFFLINE' WHERE stableId = 'str-test-0'")
+        withDeliveryGuard { guard ->
+            val ready = guard.prepare(row) as com.example.bilimonitor.background.NotificationDeliveryGuard.Result.Ready
+            val payload = NotificationPayloads.decodeBatch(ready.row.payloadJson)!!
+            assertEquals(1, payload.items.size)
+            assertEquals("str-test-1", payload.items.single().streamerStableId)
+        }
+    }
+
+    @Test
+    fun 数据陈旧时等待正常检查_不把旧状态当成实时事实() = runBlocking {
+        val event = seedEvent(0)
+        seedSession(event)
+        val row = createSingleFor(event, com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET lastConfirmedAt = ? WHERE id = ?",
+            arrayOf(wall - 24 * 60 * 60 * 1000L, event.streamerId))
+        withDeliveryGuard { guard ->
+            org.junit.Assert.assertTrue(guard.prepare(row) is com.example.bilimonitor.background.NotificationDeliveryGuard.Result.AwaitObservation)
+        }
+    }
+
+    @Test
+    fun 用户点击或划去后_结果未知的通知不会再次入队() = runBlocking {
+        repeat(2) { index ->
+            val row = createSingleFor(seedEvent(index), com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+            recordPendingHistory(row)
+            db.notificationOutboxDao().awaitObservation(row.outboxId, wall + 5000, "NOT_VISIBLE_AFTER_POST")
+            com.example.bilimonitor.notify.NotificationInteractionRepository(db, clock).record(row.eventKey, index == 1)
+            assertEquals(com.example.bilimonitor.data.local.NotificationOutboxStatus.SENT,
+                db.notificationOutboxDao().findById(row.outboxId)?.status)
+            assertEquals(if (index == 1) "USER_DISMISSED" else "USER_CLICKED",
+                db.notificationHistoryDao().findByOutboxId(row.outboxId)?.reason)
+        }
+        assertEquals(0, db.notificationOutboxDao().findDue(wall + 6000, 20).size)
+    }
+
+    @Test
+    fun 交互确认同时结算批次_不留下永久冻结的聚合() = runBlocking {
+        val p = policy(1)
+        repeat(2) { index ->
+            val event = seedEvent(index)
+            NotificationOutboxWriter.createForEvent(db, clock, event, event.streamerId, payloadOf(event), p, 1, wall)
+        }
+        closeWindow()
+        val row = db.notificationOutboxDao().findDue(wall, 20).single()
+        recordPendingHistory(row)
+        com.example.bilimonitor.notify.NotificationInteractionRepository(db, clock).record(row.eventKey, false)
+        assertEquals(com.example.bilimonitor.data.local.NotificationAggregateStatus.DISPATCHED,
+            db.notificationAggregateDao().findById(row.aggregateId!!)?.status)
+    }
+
+    @Test
+    fun 能力恢复只重启对应失败项_不反复重试无效载荷或仍关闭的渠道() = runBlocking {
+        val errors = listOf("PERMISSION_DENIED", "CHANNEL_DISABLED:available", "CHANNEL_DISABLED:blocked", "PAYLOAD_INVALID")
+        errors.forEachIndexed { index, error ->
+            val row = createSingleFor(seedEvent(index), com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+            db.openHelper.writableDatabase.execSQL("UPDATE notification_outbox SET status = 'FAILED', lastError = ? WHERE outboxId = ?",
+                arrayOf(error, row.outboxId))
+        }
+        assertEquals(2, db.notificationOutboxDao().reviveCapabilityFailures(wall, listOf("CHANNEL_DISABLED:available"), 50))
+        assertEquals(2, db.notificationOutboxDao().findDue(wall, 20).size)
+    }
+
+    private suspend fun recordPendingHistory(row: com.example.bilimonitor.data.local.entity.NotificationOutboxEntity) {
+        db.notificationHistoryDao().insert(com.example.bilimonitor.data.local.entity.NotificationHistoryEntity(
+            "hist-${row.outboxId}", row.eventKey, row.outboxId, null, row.notificationId,
+            null, row.aggregateId, com.example.bilimonitor.data.local.NotificationHistoryDeliveryStatus.PENDING,
+            1, null, null, wall, wall, "NOT_VISIBLE_AFTER_POST"))
+    }
+
+    private fun notificationResolver() = NotificationDeepLinkResolver(db.notificationOutboxDao(),
+        db.liveEventDao(), db.notificationAggregateDao(), db.streamerDao())
+
+    private suspend fun createSingleFor(event: LiveEventEntity, type: com.example.bilimonitor.data.local.NotificationEventType):
+        com.example.bilimonitor.data.local.entity.NotificationOutboxEntity {
+        NotificationOutboxWriter.createSingle(db, clock, event, event.streamerId, type, payloadOf(event), wall, true)
+        return db.notificationOutboxDao().findByEventKey("evt:${event.eventId}")!!
+    }
+
+    private suspend fun withDeliveryGuard(block: suspend (com.example.bilimonitor.background.NotificationDeliveryGuard) -> Unit) {
+        val quiet = QuietHoursRepository(context)
+        val old = quiet.current()
+        try {
+            quiet.set(false, old.startMinutes, old.endMinutes)
+            val config = ConfigRepository(db, db.configDao(), db.policyDao(), db.logDao(), clock, quiet)
+            block(com.example.bilimonitor.background.NotificationDeliveryGuard(db, config,
+                NotificationDeliverySettingsRepository(context), quiet, clock))
+        } finally { quiet.set(old.enabled, old.startMinutes, old.endMinutes) }
+    }
+
+    private suspend fun seedSession(event: LiveEventEntity) {
+        db.liveSessionDao().insert(com.example.bilimonitor.data.local.entity.LiveSessionEntity(
+            stableId = event.sessionStableId!!, sessionKey = "LIVEsession:${event.sessionStableId}",
+            streamerId = event.streamerId, startTime = wall, endTime = null,
+            startSource = null, endSource = null, durationSource = null,
+            startConfidence = null, endConfidence = null, durationConfidence = null,
+            startLocked = false, endLocked = false, durationLocked = false,
+            titleAtStart = "测试", titleAtEnd = null, areaAtStart = null, areaAtEnd = null,
+            coverUrlAtStart = null, coverUrlAtEnd = null, durationSeconds = null, endReason = null,
+            lifecycleState = com.example.bilimonitor.data.local.entity.LiveSessionLifecycleState.ACTIVE,
+            currentReliableIntervalId = null, lastConfirmedLiveAt = wall, confirmedOfflineAt = null,
+            autoUpdateProtected = false, correctionVersion = 0, createdAt = wall, updatedAt = wall, note = null))
+    }
+
+    @Test
+    fun 失败的同类维护申请不能释放当前持有者() = runBlocking {
+        val locks = RuntimeLockRepository(db.runtimeLockDao(), clock)
+        val a = RuntimeLockRepository.MaintenanceLease(com.example.bilimonitor.data.local.MaintenanceMode.BACKUP)
+        val b = RuntimeLockRepository.MaintenanceLease(a.mode)
+        org.junit.Assert.assertTrue(locks.takeOverForMaintenance(a))
+        org.junit.Assert.assertFalse(locks.takeOverForMaintenance(b))
+        org.junit.Assert.assertFalse(locks.exitMaintenance(b))
+        assertEquals(a.owner, db.runtimeLockDao().get()?.fencingToken)
+        org.junit.Assert.assertTrue(locks.exitMaintenance(a))
+        org.junit.Assert.assertFalse(locks.exitMaintenance(a))
+    }
+
+    @Test
+    fun 取消发生在维护提交之后仍能释放_旧持有者不能释放新操作() = runBlocking {
+        val locks = RuntimeLockRepository(db.runtimeLockDao(), clock)
+        val a = RuntimeLockRepository.MaintenanceLease(com.example.bilimonitor.data.local.MaintenanceMode.DATABASE_REPAIR)
+        val job = launch {
+            try {
+                org.junit.Assert.assertTrue(locks.takeOverForMaintenance(a))
+                kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]!!.cancel()
+                kotlinx.coroutines.yield()
+            } finally { locks.exitMaintenance(a) }
+        }
+        job.join()
+        assertEquals(com.example.bilimonitor.data.local.MaintenanceMode.OFF, db.runtimeLockDao().get()?.maintenanceMode)
+        val b = RuntimeLockRepository.MaintenanceLease(a.mode)
+        org.junit.Assert.assertTrue(locks.takeOverForMaintenance(b))
+        org.junit.Assert.assertFalse(locks.exitMaintenance(a))
+        assertEquals(b.owner, db.runtimeLockDao().get()?.fencingToken)
+        org.junit.Assert.assertTrue(locks.exitMaintenance(b))
+    }
+
+    @Test
+    fun 定期清理不抢占有效监控租约() = runBlocking {
+        val locks = RuntimeLockRepository(db.runtimeLockDao(), clock)
+        val monitor = locks.acquireLease()!!
+        val maintenance = RuntimeLockRepository.MaintenanceLease(com.example.bilimonitor.data.local.MaintenanceMode.DATABASE_REPAIR)
+        wall += 3_600_000 // Wall changes must not make background cleanup steal a valid lease.
+        org.junit.Assert.assertFalse(locks.enterMaintenance(maintenance))
+        org.junit.Assert.assertFalse(locks.exitMaintenance(maintenance))
+        assertEquals(monitor.fencingToken, db.runtimeLockDao().get()?.fencingToken)
+        locks.release(monitor)
+        org.junit.Assert.assertTrue(locks.enterMaintenance(maintenance))
+        org.junit.Assert.assertTrue(locks.exitMaintenance(maintenance))
+    }
+
+    @Test
+    fun 汇总覆盖超过一千条历史_筛选在分页之前执行() = runBlocking {
+        val oldEvent = seedEvent(0)
+        seedSession(oldEvent)
+        val template = db.liveSessionDao().findByStableId(oldEvent.sessionStableId!!)!!
+        db.openHelper.writableDatabase.execSQL("UPDATE live_session SET endTime = ?, durationSeconds = 60 WHERE stableId = ?",
+            arrayOf(wall + 60_000, template.stableId))
+        val recentEvent = seedEvent(1)
+        db.withTransaction {
+            repeat(1001) { i ->
+                val start = wall + (i + 1) * 120_000L
+                db.liveSessionDao().insert(template.copy(id = 0, stableId = "many-$i", sessionKey = "many-$i",
+                    streamerId = recentEvent.streamerId, startTime = start, endTime = start + 60_000,
+                    durationSeconds = 60, titleAtStart = if (i == 0) "unique old title" else "recent"))
+            }
+        }
+        val summaries = db.liveSessionDao().observeSummaries().first().associateBy { it.streamerId }
+        assertEquals(1, summaries[oldEvent.streamerId]?.sessionCount)
+        assertEquals(60L, summaries[oldEvent.streamerId]?.totalSeconds)
+        assertEquals(1001, summaries[recentEvent.streamerId]?.sessionCount)
+        assertEquals(60_060L, summaries[recentEvent.streamerId]?.totalSeconds)
+        val filtered = db.liveSessionDao().observeFiltered(recentEvent.streamerId, Long.MIN_VALUE,
+            Long.MAX_VALUE, "unique old", 200).first()
+        assertEquals("many-0", filtered.single().stableId)
+        val dateFiltered = db.liveSessionDao().observeFiltered(recentEvent.streamerId, wall + 120_000,
+            wall + 240_000, "", 200).first()
+        assertEquals("many-0", dateFiltered.single().stableId)
+        assertEquals(201, db.liveSessionDao().observeFiltered(recentEvent.streamerId, Long.MIN_VALUE,
+            Long.MAX_VALUE, "", 201).first().size)
+    }
+
+    @Test
+    fun 备注编辑保留时间来源_空备注可清除且审计只列实际修改() = runBlocking {
+        val event = seedEvent(0)
+        seedSession(event)
+        db.openHelper.writableDatabase.execSQL("UPDATE live_session SET endTime = ?, durationSeconds = 60, startSource = 'MONITOR_OBSERVED', startConfidence = 'CONFIRMED', note = 'old' WHERE stableId = ?",
+            arrayOf(wall + 60_000, event.sessionStableId))
+        val before = db.liveSessionDao().findByStableId(event.sessionStableId!!)!!
+        val history = HistoryRepository(db, db.liveSessionDao(), db.liveSessionTitleDao(), db.liveEventDao(),
+            db.streamerDao(), db.logDao(), clock)
+        val correction = ManualCorrection(before.stableId, before.startTime, before.endTime,
+            before.durationSeconds, "updated")
+        assertEquals(CorrectionResult.Applied, history.applyManualCorrection(correction))
+        val after = db.liveSessionDao().findByStableId(before.stableId)!!
+        assertEquals(before.startSource, after.startSource)
+        assertEquals(before.startConfidence, after.startConfidence)
+        org.junit.Assert.assertFalse(after.startLocked)
+        assertEquals("[\"note\"]", stringOf("SELECT changedFieldsJson FROM live_session_correction ORDER BY createdAt DESC LIMIT 1"))
+        assertEquals(CorrectionResult.Applied, history.applyManualCorrection(
+            ManualCorrection(before.stableId, null, null, null, null, noteChanged = true)))
+        org.junit.Assert.assertNull(db.liveSessionDao().findByStableId(before.stableId)?.note)
+    }
+
+    @Test
+    fun 部分陈旧的批次立即处理健康成员_待复核成员幂等转为单条() = runBlocking {
+        repeat(2) { i ->
+            val event = seedEvent(i); seedSession(event)
+            NotificationOutboxWriter.createForEvent(db, clock, event, event.streamerId, payloadOf(event), policy(1), 1, wall)
+        }
+        closeWindow()
+        val dao = db.notificationOutboxDao()
+        val batch = dao.findDue(wall, 20).single()
+        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET lastConfirmedAt = 1 WHERE stableId = 'str-test-1'")
+        withDeliveryGuard { guard ->
+            val prepared = guard.prepare(batch) as com.example.bilimonitor.background.NotificationDeliveryGuard.Result.Ready
+            assertEquals(1, NotificationPayloads.decodeBatch(prepared.row.payloadJson)?.items?.size)
+            assertEquals("str-test-1", prepared.deferred.single().streamerStableId)
+            val dispatcher = com.example.bilimonitor.background.NotificationDispatcher(db, dao,
+                db.notificationHistoryDao(), db.notificationAggregateDao(), db.logDao(),
+                RuntimeLockRepository(db.runtimeLockDao(), clock),
+                com.example.bilimonitor.notify.NotificationPoster(context, clock), clock, guard)
+            dispatcher.dispatchDue()
+            org.junit.Assert.assertTrue(dao.findById(batch.outboxId)!!.attemptCount > 0)
+            assertEquals(1, NotificationPayloads.decodeBatch(dao.findById(batch.outboxId)!!.payloadJson)?.items?.size)
+            val deferred = dao.findByEventKey("evt:evt-test-1")!!
+            assertEquals(0, deferred.attemptCount)
+            assertEquals(1, db.notificationAggregateDao().countActiveEvents(batch.aggregateId!!))
+            dispatcher.dispatchDue()
+            assertEquals(1, singleCount())
+            assertEquals(0, dao.findById(deferred.outboxId)?.attemptCount)
+        }
+    }
+
+    @Test
+    fun 系统时间前后跳动不改变同次开机通知有效期和重试截止时间() = runBlocking {
+        val event = seedEvent(0); seedSession(event)
+        val row = createSingleFor(event, com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+        withDeliveryGuard { guard ->
+            val ready = (guard.prepare(row) as com.example.bilimonitor.background.NotificationDeliveryGuard.Result.Ready).row
+            db.openHelper.writableDatabase.execSQL("UPDATE notification_outbox SET expiresAt = ? WHERE outboxId = ?",
+                arrayOf(ready.expiresAt, row.outboxId))
+            val dao = db.notificationOutboxDao()
+            wall += 600_000; elapsed += 10_000
+            assertEquals(0, dao.expireOverduePending(wall, elapsed, clock.bootId()))
+            assertEquals(1, dao.findDue(wall, 20, elapsed, clock.bootId()).size)
+            org.junit.Assert.assertTrue(guard.prepare(dao.findById(row.outboxId)!!) is com.example.bilimonitor.background.NotificationDeliveryGuard.Result.Ready)
+            dao.awaitObservation(row.outboxId, row.createdAt + 15_000)
+            wall -= 3_600_000
+            assertEquals(5_000L, dao.nextDeliveryDelay(wall, elapsed, clock.bootId()))
+            assertEquals(0, dao.findDue(wall, 20, elapsed, clock.bootId()).size)
+            elapsed += 5_000
+            assertEquals(1, dao.findDue(wall, 20, elapsed, clock.bootId()).size)
+            assertEquals(1, dao.claimOutbox(row.outboxId, wall, wall + 30_000, elapsed + 30_000,
+                clock.bootId(), "worker", "attempt"))
+            elapsed += 31_000
+            dao.recoverExpiredProcessing(wall, elapsed, clock.bootId())
+            assertEquals(com.example.bilimonitor.data.local.NotificationOutboxStatus.RETRY_WAIT, dao.findById(row.outboxId)?.status)
+            elapsed += 300_000
+            assertEquals(1, dao.expireOverduePending(wall, elapsed, clock.bootId()))
+            assertEquals(0, dao.findDue(wall, 20, elapsed, clock.bootId()).size)
+        }
+    }
+
+    @Test
+    fun 跨开机和旧通知使用墙钟回退() = runBlocking {
+        val row = createSingleFor(seedEvent(0), com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
+        assertEquals(1, db.notificationOutboxDao().expireOverduePending(row.expiresAt + 1, 1, "other-boot"))
+    }
+
+    @Test
+    fun 健康计数随主播变化发射而无需更改配置() = runBlocking {
+        val event = seedEvent(0)
+        val values = kotlinx.coroutines.channels.Channel<Int>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val job = launch {
+            db.streamerDao().observeHealthGroups().collect { groups -> values.send(groups.sumOf { it.count }) }
+        }
+        try {
+            assertEquals(1, kotlinx.coroutines.withTimeout(5000) { values.receive() })
+            db.streamerDao().setMonitoringEnabled(event.streamerId, false, wall)
+            assertEquals(0, kotlinx.coroutines.withTimeout(5000) { values.receive() })
+        } finally { job.cancel(); job.join(); values.close() }
+    }
+
+    @Test
+    fun 审计日志保留新记录_按批次清除过期记录() = runBlocking {
+        repeat(4) { i -> db.logDao().insertAudit(com.example.bilimonitor.data.local.entity.AuditLogEntity(
+            "audit-$i", "op-$i", "SYSTEM", "TEST", "test", null, wall - i * 1000, null)) }
+        assertEquals(1, db.logDao().cleanupAudit(wall - 1500, 100, 1))
+        assertEquals(3, countOf("SELECT COUNT(*) FROM audit_log"))
+        assertEquals(1, db.logDao().cleanupAudit(wall - 1500, 100, 10))
+        assertEquals(2, countOf("SELECT COUNT(*) FROM audit_log"))
+    }
 
     // ---------------------------------------------------------------- 断言工具
 

@@ -157,7 +157,7 @@ abstract class AppDatabase : RoomDatabase() {
          * v10 = 新增「熔断总开关」`circuitBreakerEnabled`（默认 true，保持既有行为），
          * 见 [AppMigrations.V9_10__circuitBreakerSwitch]。
          */
-        const val DB_VERSION = 11
+        const val DB_VERSION = 12
     }
 }
 

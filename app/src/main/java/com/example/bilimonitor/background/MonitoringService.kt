@@ -21,6 +21,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.retryWhen
 import javax.inject.Inject
 
 /**
@@ -31,6 +34,8 @@ import javax.inject.Inject
 class MonitoringService : LifecycleService() {
 
     @Inject lateinit var engine: MonitoringEngine
+    @Inject lateinit var appClock: com.example.bilimonitor.core.AppClock
+    @Inject lateinit var streamerDao: com.example.bilimonitor.data.local.dao.StreamerDao
     @Inject lateinit var configRepository: ConfigRepository
     @Inject lateinit var logDao: com.example.bilimonitor.data.local.dao.LogDao
     @Inject lateinit var notificationSettingsRepository:
@@ -47,6 +52,88 @@ class MonitoringService : LifecycleService() {
     @Inject @javax.inject.Named("appScope") lateinit var appScope: kotlinx.coroutines.CoroutineScope
 
     private var loopJob: kotlinx.coroutines.Job? = null
+    private val loopWake = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+    private var monitoredCount: Int? = null
+    private var networkCallbackRegistered = false
+    private var lastNetworkAvailable: Boolean? = null
+    private var networkReadFailureLogged = false
+    private var screenReceiverRegistered = false
+    private val networkManager by lazy {
+        getSystemService(android.net.ConnectivityManager::class.java)
+    }
+    private fun networkAvailable(): Boolean = try {
+        networkManager.getNetworkCapabilities(networkManager.activeNetwork)
+            ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    } catch (e: Exception) {
+        if (!networkReadFailureLogged) {
+            networkReadFailureLogged = true
+            appScope.launch { recordEnvironmentFailure(e) }
+        }
+        lastNetworkAvailable ?: true
+    }
+    private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) = environmentChanged(true)
+        override fun onLost(network: android.net.Network) = environmentChanged(true)
+        override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) = environmentChanged(true)
+    }
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: Intent) = environmentChanged(false)
+    }
+    private fun environmentChanged(checkNow: Boolean) {
+        lifecycleScope.launch {
+            syncWakeLock()
+            val connected = networkAvailable()
+            if (checkNow && connected != lastNetworkAvailable) loopWake.trySend(Unit)
+            lastNetworkAvailable = connected
+        }
+    }
+
+    private suspend fun recordEnvironmentFailure(error: Throwable) {
+        try {
+            logDao.insertAppError(com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                com.example.bilimonitor.core.Ids.newId(), null, appClock.nowWall(),
+                com.example.bilimonitor.data.local.AppError.BACKGROUND_EXECUTION_RESTRICTED,
+                "读取／监听运行环境失败，将重新检测：${error.message}".take(500)))
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { android.util.Log.e(TAG, "运行环境与错误记录失败", error) }
+    }
+
+    private fun observeEnvironment() {
+        try {
+            networkManager.registerDefaultNetworkCallback(networkCallback)
+            networkCallbackRegistered = true
+            androidx.core.content.ContextCompat.registerReceiver(this, screenReceiver,
+                android.content.IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                }, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+            screenReceiverRegistered = true
+        } catch (e: Exception) {
+            appScope.launch { recordEnvironmentFailure(e) }
+        }
+        lifecycleScope.launch {
+            streamerDao.observeMonitoredCount().distinctUntilChanged()
+                .retryWhen { error, _ ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    recordEnvironmentFailure(error)
+                    delay(30_000L)
+                    true
+                }.collect {
+                monitoredCount = it
+                syncWakeLock()
+                loopWake.trySend(Unit)
+            }
+        }
+        lifecycleScope.launch {
+            configRepository.getConfigFlow().map { Triple(it?.monitoringEnabled, it?.mode, it?.intervalSeconds) }
+                .distinctUntilChanged().retryWhen { error, _ ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    recordEnvironmentFailure(error)
+                    delay(30_000L)
+                    true
+                }.collect { loopWake.trySend(Unit) }
+        }
+    }
 
     /**
      * 当前持有的 partial wakelock。
@@ -78,6 +165,7 @@ class MonitoringService : LifecycleService() {
         //   现在只有真的进了前台（startInForeground 成功）才算数。
         // 先把用户自定义的模板读进缓存，之后再发通知（首帧仍可能用默认值，见 notificationContent 注释）
         lifecycleScope.launch { refreshNotificationContent() }
+        observeEnvironment()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -173,6 +261,7 @@ class MonitoringService : LifecycleService() {
         //   注意它单独用是不够的：Doze 期间系统会忽略非白名单应用的 wakelock 与网络，
         //   所以还要在「高级保活」里用 Root/Shizuku 把它加入 Doze 白名单。
         var consecutiveFailures = 0
+        var networkPauseRecorded = false
         try {
         while (currentCoroutineContext().isActive) {
             // ★ 循环体整体要有异常边界（台账 H19-A1）：
@@ -211,12 +300,29 @@ class MonitoringService : LifecycleService() {
                 //   现在不捕获：异常落到下面同一套处理（Log.e + 写 application_error_log +
                 //   consecutiveFailures++ + 到阈值如实退出服务），与 :122 起的写法完全一致；
                 //   取消仍由外层 `catch (e: CancellationException) { throw e }` 原样直通。
+                if (!networkAvailable()) {
+                    if (!networkPauseRecorded) {
+                        engine.recordNetworkPause()
+                        networkPauseRecorded = true
+                    }
+                    // A connectivity callback resumes immediately. The fallback timer holds no wakelock.
+                    kotlinx.coroutines.withTimeoutOrNull(300_000L) { loopWake.receive() }
+                    continue
+                }
+                networkPauseRecorded = false
+                val tickStarted = appClock.nowElapsed()
                 engine.checkOnce("fgs")
                 // 数字变了就重发通知（用户自定义文案里的 {count}/{live} 要跟着走）。
                 // 用"签名"比较而不是每次都 startForeground：避免每轮无谓刷新通知。
                 refreshNotificationIfChanged()
                 consecutiveFailures = 0
-                delay(snapshot.intervalSeconds * 1000L)
+                val wait = com.example.bilimonitor.domain.policy.MonitoringCadencePolicy.delayMs(
+                    tickStarted, appClock.nowElapsed(), snapshot.intervalSeconds)
+                if (monitoredCount == 0) {
+                    kotlinx.coroutines.withTimeoutOrNull(300_000L) { loopWake.receive() }
+                } else {
+                    kotlinx.coroutines.withTimeoutOrNull(wait) { loopWake.receive() }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e // 取消是正常控制流，必须原样向上传播
             } catch (e: Exception) {
@@ -243,7 +349,7 @@ class MonitoringService : LifecycleService() {
                     android.util.Log.e("MonitoringService", "监控循环连续失败达到阈值，停止前台服务")
                     break
                 }
-                runCatching { delay(30_000L) }
+                delay(30_000L)
             }
         }
         } finally {
@@ -265,6 +371,8 @@ class MonitoringService : LifecycleService() {
             // ★ 读不出来**不能**当成「用户关了开关」：那会在一次瞬时读失败时把锁悄悄放掉，
             //   而用户看到的是"开关开着、锁屏后却还是停了"。
             //   仓库的降级原则是「读不到就当不知道」，这里对应"保持现状"，并留一条可查的痕迹。
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            recordEnvironmentFailure(e)
             android.util.Log.w(TAG, "读取高级保活开关失败，保持当前 wakelock 状态：${e.message}")
             return
         }
@@ -275,7 +383,19 @@ class MonitoringService : LifecycleService() {
         //   两者会各建一把锁、后写的覆盖字段，第一把锁从此失去引用却仍然持有：
         //   进程活多久就耗多久电（PARTIAL_WAKE_LOCK 没有超时），而且界面上完全看不出来。
         //   现在临界区内没有任何挂起点 → 主线程单线程执行，交错不可能发生。
-        applyWakeLockDesired(settings.wakelockEnabled)
+        val interactive = getSystemService(android.os.PowerManager::class.java).isInteractive
+        val network = networkAvailable()
+        val desired = com.example.bilimonitor.domain.policy.MonitoringCadencePolicy.needsWakeLock(
+            settings.wakelockEnabled && isRunning.value, interactive, network, monitoredCount)
+        wakelockStatus.value = when {
+            !settings.wakelockEnabled -> "锁屏继续活跃已关闭"
+            !isRunning.value -> "实时监控服务未运行，未持有唤醒锁"
+            monitoredCount == 0 -> "没有启用监控的主播，已释放唤醒锁"
+            !network -> "当前无网络，已释放唤醒锁；网络恢复后重新检查"
+            interactive -> "屏幕亮着，无需额外持有唤醒锁"
+            else -> "锁屏实时监控：持续持有唤醒锁，会增加待机耗电"
+        }
+        applyWakeLockDesired(desired)
     }
 
     /**
@@ -307,6 +427,7 @@ class MonitoringService : LifecycleService() {
         } else {
             val e = result.exceptionOrNull()
             android.util.Log.e(TAG, "获取 partial wakelock 失败：${e?.message}", e)
+            wakelockStatus.value = "系统未能授予唤醒锁，锁屏检查可能延迟"
             // 拿不到锁要如实留痕：否则界面上开着"锁屏继续活跃"、实际根本没生效。
             // 用 appScope 而不是 lifecycleScope：服务随时可能被停，日志不能跟着一起没。
             appScope.launch {
@@ -504,6 +625,9 @@ class MonitoringService : LifecycleService() {
 
     override fun onDestroy() {
         isRunning.value = false
+        wakelockStatus.value = "实时监控服务未运行，未持有唤醒锁"
+        if (networkCallbackRegistered) runCatching { networkManager.unregisterNetworkCallback(networkCallback) }
+        if (screenReceiverRegistered) runCatching { unregisterReceiver(screenReceiver) }
         // 兜底：循环的 finally 正常会释放，但服务被杀/异常退出时不能指望它
         releaseWakeLock("服务销毁")
         loopJob?.cancel()
@@ -558,6 +682,7 @@ class MonitoringService : LifecycleService() {
          * 诊断包与界面都读它：开着开关但锁没拿到（系统拒绝等）时，必须能看出来。
          */
         val isWakelockHeld = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val wakelockStatus = kotlinx.coroutines.flow.MutableStateFlow("实时监控服务未运行，未持有唤醒锁")
 
         /** 运行态表达（0.6.47.2）：界面必须反映 FGS 是否真的在跑，而不是用户选择的意图。 */
         val isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)

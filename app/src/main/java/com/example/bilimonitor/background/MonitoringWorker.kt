@@ -37,6 +37,7 @@ class MonitoringWorker @dagger.assisted.AssistedInject constructor(
     @dagger.assisted.Assisted context: Context,
     @dagger.assisted.Assisted params: WorkerParameters,
     private val engine: MonitoringEngine,
+    private val notificationCoordinator: NotificationDeliveryCoordinator,
     private val configRepository: ConfigRepository,
     private val notificationRepository: NotificationRepository,
     private val runtimeLockRepository: RuntimeLockRepository,
@@ -72,6 +73,13 @@ class MonitoringWorker @dagger.assisted.AssistedInject constructor(
         val outcome = runCatching { engine.checkOnce("workmanager") }
         outcome.exceptionOrNull()?.let { e ->
             logError("power saving tick threw: ${e.message}")
+            return Result.retry()
+        }
+        try {
+            notificationCoordinator.finishWorkerDelivery()
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
+            logError("worker notification delivery failed: ${e.message}")
             return Result.retry()
         }
         val result = outcome.getOrNull()

@@ -48,6 +48,7 @@ import com.example.bilimonitor.ui.common.recentSessionText
 import com.example.bilimonitor.ui.common.sortedBySessionSortOrder
 import com.example.bilimonitor.ui.home.formatDuration
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -174,43 +175,26 @@ class StatsListViewModel @Inject constructor(
     // 显式标注可空类型：stateIn 的初值传 null 时靠推断得到 `List<…>?`，
     // 写清楚比让读者去推更省事（下面的 loading 判断也依赖这个可空性）。
     private val summaries: StateFlow<List<StreamerStatsSummary>?> = combine(
-        liveSessionDao.observeRecent(1000),
+        liveSessionDao.observeSummaries(),
         streamerDao.observeActive(),
         query,
         sortOrder
     ) { sessions, streamers, q, order ->
-        // 场次计数 / 总时长只认**已结束**的场次（进行中的场次没有最终时长，计进去就是假数据）；
-        // 但「最近」必须看得到进行中的那一场，否则正在直播的主播会退回显示上一场。
-        val closedByStreamer = sessions
-            .filter { it.endTime != null }
-            .groupBy { it.streamerId }
-        val allByStreamer = sessions.groupBy { it.streamerId }
-        // 每个主播"最近一次**真正结束**直播"的时刻（排序选项 4 的键）：直接复用上面那份
-        // "只含已结束场次"的分组，取下播时刻的最大值。
-        // 不能用「最新一场」的 endTime 代替：正在直播时它就是 null，于是"最近一场已结束的场次"
-        // 才是唯一能回答"这个主播上一次下播是什么时候"的量。用最大值而不是"最新一场的 endTime"，
-        // 也是为了容忍人工补录 / 异常中断留下的交叠场次。
-        // ★ 这里用局部 Map 而不是给 StreamerStatsSummary 加字段：那个数据类定义在
-        //   StatsSeriesRepository.kt，本次改动范围只含本文件。口径与历史页的 lastClosedEndAt 完全一致。
-        val lastClosedEndByStreamer: Map<Long, Long?> = closedByStreamer.mapValues { (_, list) ->
-            list.mapNotNull { it.endTime }.maxOrNull()
-        }
+        val byStreamer = sessions.associateBy { it.streamerId }
+        val lastClosedEndByStreamer = sessions.associate { it.streamerId to it.lastClosedEndAt }
         streamers
             .filter { q.isBlank() || it.name.contains(q.trim()) }
             .map { s ->
-                val closed = closedByStreamer[s.id].orEmpty()
-                // 「最新一场」的判定与直播历史一级页同一份规则：开播时间最晚的那一场（含进行中），
-                // 显示它的**下播**时间；两页只要有一页换了算法，同一个主播就会出现两个"最近"。
-                val latest = allByStreamer[s.id].orEmpty().maxByOrNull { it.startTime ?: it.createdAt }
+                val summary = byStreamer[s.id]
                 StreamerStatsSummary(
                     streamerId = s.id,
                     name = s.name,
                     avatarUrl = s.avatarUrl,
-                    sessionCount = closed.size,
-                    totalSeconds = closed.sumOf { it.durationSeconds ?: 0L },
-                    latestSessionStartAt = latest?.let { it.startTime ?: it.createdAt },
+                    sessionCount = summary?.sessionCount ?: 0,
+                    totalSeconds = summary?.totalSeconds ?: 0L,
+                    latestSessionStartAt = summary?.latestSessionStartAt,
                     // 下播时间可能为 null（还在直播）：交给展示层说"直播中"，界面不会出现 null/空白
-                    latestSessionEndAt = latest?.endTime
+                    latestSessionEndAt = summary?.latestSessionEndAt
                 )
             }
             // ★ 本页原先"一律按总时长从大到小"的排序**改了**，这是本次需求的一部分：
@@ -229,7 +213,8 @@ class StatsListViewModel @Inject constructor(
             )
     // 初值用 null 而不是 emptyList()：界面要区分"还没查完"与"确实没有记录"，
     // 否则进页面会先闪一下空态文案再刷出列表（loading 字段此前恒为 false，是个死字段）。
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val uiState: StateFlow<StatsListUiState> = combine(
         summaries,

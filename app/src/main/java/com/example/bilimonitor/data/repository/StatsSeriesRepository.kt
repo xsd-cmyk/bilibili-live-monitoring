@@ -136,7 +136,8 @@ class StatsSeriesRepository @Inject constructor(
      * 必须先用 `inclusiveDayRange(...)`（ui/common/TimeRange.kt）换算成次日 00:00。
      * 换算只此一处，别在页面里各写一份 `plusDays(1)` —— 口径分叉正是 B20 的成因。
      */
-    suspend fun seriesCustom(streamerId: Long, startInclusive: Long, endExclusive: Long): StatsSeriesResult {
+    suspend fun seriesCustom(streamerId: Long, startInclusive: Long, endExclusive: Long,
+        sourceSessions: List<com.example.bilimonitor.data.local.entity.LiveSessionEntity>? = null): StatsSeriesResult {
         val start = startInclusive
         val end = endExclusive
         val startDate = Instant.ofEpochMilli(start).atZone(zone).toLocalDate()
@@ -166,7 +167,7 @@ class StatsSeriesRepository @Inject constructor(
                 val ym = Instant.ofEpochMilli(t).atZone(zone).toLocalDate().withDayOfMonth(1)
                 java.time.temporal.ChronoUnit.MONTHS.between(first, ym).toInt()
             }
-            computeFor(streamerId, start, end, StatsGranularity.MONTH, null, start, end, labels, monthIndexer)
+            computeFor(streamerId, start, end, StatsGranularity.MONTH, null, start, end, labels, monthIndexer, sourceSessions)
         } else {
             // 标签用 plusDays 逐个生成（而不是 start + it * 86_400_000L）：夏令时切换日加固定
             // 毫秒会偏一小时，标签就会与真实自然日错位，柱子内容和标题对不上。
@@ -176,7 +177,7 @@ class StatsSeriesRepository @Inject constructor(
                 val d = Instant.ofEpochMilli(t).atZone(zone).toLocalDate()
                 java.time.temporal.ChronoUnit.DAYS.between(startDate, d).toInt()
             }
-            computeFor(streamerId, start, end, StatsGranularity.DAY, null, start, end, labels, dayIndexer)
+            computeFor(streamerId, start, end, StatsGranularity.DAY, null, start, end, labels, dayIndexer, sourceSessions)
         }
     }
 
@@ -189,10 +190,10 @@ class StatsSeriesRepository @Inject constructor(
         customStart: Long?,
         customEnd: Long?,
         explicitLabels: List<String>?,
-        explicitIndexer: ((com.example.bilimonitor.data.local.entity.LiveSessionEntity) -> Int)?
-    ): StatsSeriesResult {
-        val sessions = liveSessionDao.listClosedBetween(start, end)
-            .filter { it.streamerId == streamerId }
+        explicitIndexer: ((com.example.bilimonitor.data.local.entity.LiveSessionEntity) -> Int)?,
+        sourceSessions: List<com.example.bilimonitor.data.local.entity.LiveSessionEntity>? = null
+    ): StatsSeriesResult = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+        val sessions = sourceSessions ?: liveSessionDao.listClosedForStreamersBetween(listOf(streamerId), start, end)
         val streamer = streamerDao.findById(streamerId)
         val labels = explicitLabels ?: bucketLabels(g, value ?: "")
 
@@ -219,10 +220,15 @@ class StatsSeriesRepository @Inject constructor(
             return i.coerceIn(0, labels.lastIndex.coerceAtLeast(0))
         }
 
-        val points = labels.mapIndexed { i, label ->
-            val inBucket = sessions.filter { indexOf(it) == i }
-            SeriesPoint(label, inBucket.sumOf { it.durationSeconds ?: 0L }, inBucket.size)
+        val seconds = LongArray(labels.size)
+        val counts = IntArray(labels.size)
+        for (session in sessions) {
+            if (labels.isEmpty()) break
+            val index = indexOf(session).coerceIn(0, labels.lastIndex)
+            seconds[index] += session.durationSeconds ?: 0L
+            counts[index]++
         }
+        val points = labels.mapIndexed { i, label -> SeriesPoint(label, seconds[i], counts[i]) }
 
         // 与原 StatsRepository.compute 的口径保持一致：
         //  - excludedSessionCount：同一区间内**尚未结束**（或无法判定结束）的场次数 ——
@@ -248,7 +254,7 @@ class StatsSeriesRepository @Inject constructor(
             reliableMonitoredSeconds = reliableSeconds
         )
 
-        return StatsSeriesResult(
+        StatsSeriesResult(
             streamerId = streamerId,
             streamerName = streamer?.name ?: "未知主播",
             granularity = g,

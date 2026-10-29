@@ -445,7 +445,7 @@ class DiagnosticExporter @Inject constructor(
          *   本次把 `8 to 9`（失败占比 + 封禁复查间隔）与 `9 to 10`（熔断开关）一并补上。
          */
         val MIGRATION_PAIRS: List<Pair<Int, Int>> = listOf(
-            1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10, 10 to 11
+            1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10, 10 to 11, 11 to 12
         )
     }
 }

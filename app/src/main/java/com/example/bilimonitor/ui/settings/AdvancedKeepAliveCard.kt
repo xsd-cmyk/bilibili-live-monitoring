@@ -49,6 +49,7 @@ import com.example.bilimonitor.data.repository.KeepAliveReport
 internal fun AdvancedKeepAliveCard(
     wakelockEnabled: Boolean,
     wakelockHeld: Boolean,
+    wakelockStatus: String,
     currentLevel: PrivilegeLevel,
     power: com.example.bilimonitor.data.repository.AdvancedKeepAliveRepository.PowerExemption?,
     onRequestIgnoreBattery: () -> Unit,
@@ -142,8 +143,8 @@ internal fun AdvancedKeepAliveCard(
                 Column(Modifier.weight(1f)) {
                     Text("锁屏继续活跃", fontWeight = FontWeight.Medium)
                     Text(
-                        "持有 partial wakelock：屏幕关闭后仍按间隔轮询。会明显增加耗电" +
-                            "（只在实时模式的前台服务里持有，退出服务即释放）",
+                        "锁屏且有网络时按间隔轮询。亮屏、无网络或没有监控对象时释放唤醒锁。" +
+                            "如需更低待机功耗，可切换省电监控（15 分钟以上，系统可能延后）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -152,15 +153,9 @@ internal fun AdvancedKeepAliveCard(
             }
             if (wakelockEnabled) {
                 Text(
-                    if (wakelockHeld) {
-                        "实际状态：正在持有 wakelock（实时模式下 CPU 不会休眠）"
-                    } else {
-                        "实际状态：未持有 wakelock —— 服务没在跑、或系统拒绝了取锁" +
-                            "（这种情况锁屏后仍会停止轮询，详情见设置页的诊断包）"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
+                    "实际状态：$wakelockStatus",
                     color = if (wakelockHeld) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             if (currentLevel != PrivilegeLevel.NONE) {

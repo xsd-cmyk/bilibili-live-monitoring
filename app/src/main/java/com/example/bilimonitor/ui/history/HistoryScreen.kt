@@ -67,6 +67,10 @@ import com.example.bilimonitor.ui.home.formatDuration
 import com.example.bilimonitor.ui.home.formatTime
 import com.example.bilimonitor.ui.home.zoneOf
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -106,6 +110,7 @@ data class StreamerSessionRow(
 data class StreamerHistoryUiState(
     val streamer: StreamerEntity? = null,
     val rows: List<StreamerSessionRow> = emptyList(),
+    val hasMore: Boolean = false,
     val filter: HistoryFilter = HistoryFilter(),
     val titleQuery: String = "",
     val message: String? = null
@@ -133,7 +138,8 @@ class StreamerHistoryViewModel @Inject constructor(
      * 没有这个守卫就会再起一条 Room 管线：两条管线并行写同一个 `_uiState`，
      * 旧管线还永不释放（写法与 `StreamerDetailScreen.load` 保持一致）。
      */
-    private var loadedStreamerId: Long = 0
+    private val loadedStreamerId = MutableStateFlow(0L)
+    private val pageLimit = MutableStateFlow(200)
 
     /**
      * 标题搜索的**防抖**副本。
@@ -179,7 +185,7 @@ class StreamerHistoryViewModel @Inject constructor(
      * 导出范围与页面上的筛选是两件事，因此这里用独立的范围选择。
      */
     fun confirmExport(range: HistoryFilter) {
-        val streamerId = _uiState.value.streamer?.id ?: return
+        val streamerId = uiState.value.streamer?.id ?: return
         if (exportRunning.value) return
         exportRange.value = null
         exportRunning.value = true
@@ -197,102 +203,49 @@ class StreamerHistoryViewModel @Inject constructor(
     }
 
     fun load(streamerId: Long) {
-        if (loadedStreamerId == streamerId) return
-        loadedStreamerId = streamerId
-        viewModelScope.launch {
-            // 直接 collect 写 _uiState，不再套一层 stateIn(WhileSubscribed(5_000))：
-            // 这个 collect 是 ViewModel 自己永久持有的订阅，WhileSubscribed 的 5 秒超时
-            // 永远不会触发 —— 那层 stateIn 既不省资源，又让注释看起来像"没人看就停上游"，
-            // 与实际行为相反。初值由 _uiState 自己的默认值提供。
-            combine(
-                streamerDao.observeById(streamerId),
-                liveSessionDao.observeByStreamer(streamerId, 600),
-                titleDao.observeAll(),
-                areaDao.observeAll(),
-                // message 必须作为 flow 输入（而不是在 transform 里读 message.value）：
-                // 否则 clearMessage() 只是改了内部值、不会让管线重新发射，
-                // 那条提示要一直挂到下一次数据库变更（例如下一个监控 Tick 写库）才消失。
-                combine(titleQuery, debouncedTitleQuery, filter, message) { q, dq, f, m ->
-                    TitleInputs(immediate = q, debounced = dq, filter = f, message = m)
-                }
-            ) { arr ->
-                @Suppress("UNCHECKED_CAST")
-                val streamer = arr[0] as StreamerEntity?
-                @Suppress("UNCHECKED_CAST")
-                val sessions = arr[1] as List<LiveSessionEntity>
-                @Suppress("UNCHECKED_CAST")
-                val rawTitles =
-                    arr[2] as List<com.example.bilimonitor.data.local.entity.LiveSessionTitleEntity>
-                @Suppress("UNCHECKED_CAST")
-                val rawAreas =
-                    arr[3] as List<com.example.bilimonitor.data.local.entity.LiveSessionAreaEntity>
-                @Suppress("UNCHECKED_CAST")
-                val inputs = arr[4] as TitleInputs
-                val tq = inputs.immediate
-                // 过滤用防抖后的值；显示仍用即时值，保证输入框不回退
-                val filterQuery = inputs.debounced
-                val f = inputs.filter
+        if (loadedStreamerId.value == streamerId) return
+        pageLimit.value = 200
+        loadedStreamerId.value = streamerId
+    }
 
-                // 变更表按本主播的场次过滤：observeAll() 是全表读，
-                // 会随库里任何一条标题/分区写入而发射；这里只关心当前这 600 条场次，
-                // 先过滤再分组可以避免为整表做 groupBy/排序（DAO 层改按主播查询属于 data 层）。
-                val sessionIds = sessions.mapTo(HashSet()) { it.stableId }
-                val titles = rawTitles.filter { it.sessionStableId in sessionIds }
-                val areas = rawAreas.filter { it.sessionStableId in sessionIds }
+    fun loadMore() { pageLimit.value += 200 }
 
-                val titlesBySession = titles.groupBy { it.sessionStableId }
-                    .mapValues { (_, list) -> list.sortedBy { it.observedAt }.map { it.title } }
-
-                // 分区：一场直播可能换过多次分区，全部按观察顺序展示
-                val areasBySession = areas.groupBy { it.sessionStableId }
-                    .mapValues { (_, list) ->
-                        list.sortedBy { it.observedAt }.map { it.areaLabel }.distinct()
-                    }
-
-                var rows = sessions.map { s ->
-                    StreamerSessionRow(
-                        session = s,
-                        titles = (titlesBySession[s.stableId].orEmpty() +
-                            listOfNotNull(s.titleAtStart, s.titleAtEnd)).distinct(),
-                        // 兜底：迁移回填之外，老场次可能只有 session.areaAtStart
-                        areas = areasBySession[s.stableId].orEmpty()
-                            .ifEmpty { listOfNotNull(s.areaAtStart, s.areaAtEnd).distinct() }
-                    )
-                }
-
-                // 周期筛选
-                val bounds = f.bounds()
-                if (bounds != null) {
-                    rows = rows.filter {
-                        val t = it.session.startTime ?: it.session.createdAt
-                        t >= bounds.first && t < bounds.second
-                    }
-                }
-
-                // 标题关键词（在筛选结果内搜索）
-                if (filterQuery.isNotBlank()) {
-                    rows = rows.filter { r -> r.titles.any { it.contains(filterQuery.trim()) } }
-                }
-
-                StreamerHistoryUiState(
-                    streamer = streamer,
-                    // 排序按"直播时间"（开播时间）倒序，createdAt 仅作兜底 ——
-                    // 与 DAO（observeByStreamer）保持同一口径，避免两处排序键不同导致列表跳动
-                    rows = rows.sortedByDescending { it.session.startTime ?: it.session.createdAt },
-                    filter = f,
-                    titleQuery = tq,
-                    message = inputs.message
-                )
-            }.collect { _uiState.value = it }
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val sessionData = combine(loadedStreamerId, filter, debouncedTitleQuery, pageLimit) { id, f, q, limit ->
+        val bounds = f.bounds()
+        liveSessionDao.observeFiltered(id, bounds?.first ?: Long.MIN_VALUE,
+            bounds?.second ?: Long.MAX_VALUE, q.trim(), limit + 1)
+    }.flatMapLatest { it }.flatMapLatest { sessions ->
+        val ids = sessions.map { it.stableId }
+        combine(titleDao.observeForSessions(ids), areaDao.observeForSessions(ids)) { titles, areas ->
+            val titleMap = titles.groupBy { it.sessionStableId }
+            val areaMap = areas.groupBy { it.sessionStableId }
+            sessions.map { s ->
+                StreamerSessionRow(s,
+                    (titleMap[s.stableId].orEmpty().sortedBy { it.observedAt }.map { it.title } +
+                        listOfNotNull(s.titleAtStart, s.titleAtEnd)).distinct(),
+                    areaMap[s.stableId].orEmpty().sortedBy { it.observedAt }.map { it.areaLabel }.distinct()
+                        .ifEmpty { listOfNotNull(s.areaAtStart, s.areaAtEnd).distinct() })
+            }
         }
     }
 
-    private val _uiState = MutableStateFlow(StreamerHistoryUiState())
-    val uiState: StateFlow<StreamerHistoryUiState> = _uiState
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val uiState: StateFlow<StreamerHistoryUiState> = combine(
+        loadedStreamerId.flatMapLatest { streamerDao.observeById(it) }, sessionData,
+        combine(titleQuery, filter, message, pageLimit) { q, f, m, limit ->
+            Pair(TitleInputs(q, q, f, m), limit)
+        }
+    ) { streamer, rows, input ->
+        StreamerHistoryUiState(streamer = streamer, rows = rows.take(input.second),
+            hasMore = rows.size > input.second, filter = input.first.filter,
+            titleQuery = input.first.immediate, message = input.first.message)
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StreamerHistoryUiState())
 
-    fun setTitleQuery(q: String) { titleQuery.value = q }
+    fun setTitleQuery(q: String) { pageLimit.value = 200; titleQuery.value = q }
 
-    fun setFilter(f: HistoryFilter) { filter.value = f }
+    fun setFilter(f: HistoryFilter) { pageLimit.value = 200; filter.value = f }
 
     /** 手工补录（主播=当前页面主播）。三项填二补全第三。 */
     fun createManualSession(
@@ -304,7 +257,7 @@ class StreamerHistoryViewModel @Inject constructor(
         area: String? = null
     ) {
         viewModelScope.launch {
-            val stableId = _uiState.value.streamer?.stableId ?: run {
+            val stableId = uiState.value.streamer?.stableId ?: run {
                 message.value = "主播不存在"; return@launch
             }
             val created = runCatching {
@@ -400,6 +353,7 @@ fun DurationFields(
 fun StreamerHistoryScreen(
     streamerId: Long,
     onBack: () -> Unit,
+    focusedSession: String? = null,
     viewModel: StreamerHistoryViewModel = hiltViewModel()
 ) {
     LaunchedEffect(streamerId) { viewModel.load(streamerId) }
@@ -409,6 +363,15 @@ fun StreamerHistoryScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val exportRange by viewModel.exportRangeFlow.collectAsStateWithLifecycle()
     val exportRunning by viewModel.exportRunningFlow.collectAsStateWithLifecycle()
+    val notificationListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    var focusedOnce by remember(focusedSession) { mutableStateOf(false) }
+    LaunchedEffect(state.rows, focusedSession) {
+        val index = state.rows.indexOfFirst { it.session.stableId == focusedSession }
+        if (index >= 0 && !focusedOnce) {
+            notificationListState.scrollToItem(index)
+            focusedOnce = true
+        }
+    }
     var showFilterDialog by remember { mutableStateOf(false) }
     var showManualDialog by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<LiveSessionEntity?>(null) }
@@ -494,6 +457,14 @@ fun StreamerHistoryScreen(
                 }
             }
 
+            if (focusedSession != null && state.streamer != null &&
+                state.rows.none { it.session.stableId == focusedSession }) {
+                Text("通知对应场次暂未出现在列表中，可清除筛选后查看；原记录也可能已清理。",
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
             // 当前筛选条件提示
             if (state.filter.type != HistoryFilterType.ALL) {
                 Row(
@@ -528,10 +499,14 @@ fun StreamerHistoryScreen(
                     )
                 }
             } else {
-                LazyColumn(Modifier.fillMaxSize()) {
+                LazyColumn(Modifier.fillMaxSize(), state = notificationListState) {
                     items(state.rows, key = { it.session.stableId }) { row ->
                         Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                             Column(Modifier.padding(12.dp)) {
+                                if (row.session.stableId == focusedSession) {
+                                    Text("通知对应场次", color = MaterialTheme.colorScheme.primary,
+                                        style = MaterialTheme.typography.labelMedium)
+                                }
                                 var expanded by remember(row.session.stableId) { mutableStateOf(false) }
                                 Text(
                                     row.titles.firstOrNull() ?: "（无标题记录）",
@@ -605,6 +580,11 @@ fun StreamerHistoryScreen(
                                     Text("备注：$it", style = MaterialTheme.typography.bodySmall)
                                 }
                             }
+                        }
+                    }
+                    if (state.hasMore) item {
+                        TextButton(onClick = viewModel::loadMore, modifier = Modifier.fillMaxWidth()) {
+                            Text("加载更多历史记录")
                         }
                     }
                     // 24dp 就够：本页是二级路由，底栏 Dock 不渲染（AppNavHost 的 showBottomBar
@@ -689,6 +669,7 @@ fun StreamerHistoryScreen(
                         endTime = end,
                         durationSeconds = duration,
                         note = note,
+                        noteChanged = note != session.note,
                         title = title,
                         area = area
                     )
@@ -847,6 +828,7 @@ private fun EditSessionDialog(
     var areaText by remember { mutableStateOf(session.areaAtStart ?: "") }
     var noteText by remember { mutableStateOf(session.note ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
+    var timesEdited by remember { mutableStateOf(false) }
 
     // 与"手工补录"同一套填二补第三规则（详见 ManualDialog 上方的说明）：
     // 以"用户最后编辑的那一项"为基准由另外两项算出第三项，**绝不回写正在编辑的那一项**。
@@ -924,16 +906,17 @@ private fun EditSessionDialog(
                 Spacer(Modifier.height(6.dp))
                 DateTimeFields(
                     label = "开播时间", parts = start, modifier = Modifier.fillMaxWidth(),
-                    onChanged = { startEditing = !start.isComplete(); deriveFrom("start") }
+                    onChanged = { timesEdited = true; startEditing = !start.isComplete(); deriveFrom("start") }
                 )
                 DateTimeFields(
                     label = "下播时间", parts = end, modifier = Modifier.fillMaxWidth(),
-                    onChanged = { endEditing = !end.isComplete(); deriveFrom("end") }
+                    onChanged = { timesEdited = true; endEditing = !end.isComplete(); deriveFrom("end") }
                 )
                 DurationFields(
                     label = "时长（时/分/秒）", parts = duration,
                     modifier = Modifier.fillMaxWidth(),
                     onChanged = {
+                        timesEdited = true
                         if (duration.isComplete()) lastDuration = duration.toSeconds()
                         durationEditing = !duration.isComplete()
                         deriveFrom("duration")
@@ -966,7 +949,7 @@ private fun EditSessionDialog(
                     error = "下播时间不能早于开播时间"; return@TextButton
                 }
                 onSave(
-                    startE, endE, d, titleText.ifBlank { null }, noteText.ifBlank { null },
+                    startE.takeIf { timesEdited }, endE.takeIf { timesEdited }, d.takeIf { timesEdited }, titleText.ifBlank { null }, noteText.ifBlank { null },
                     areaText.ifBlank { null }
                 )
             }) { Text("保存") }

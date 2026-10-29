@@ -1,5 +1,7 @@
 ﻿package com.example.bilimonitor.ui.nav
 
+import kotlinx.coroutines.flow.first
+
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material.icons.Icons
@@ -85,13 +87,15 @@ object Routes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
     const val HISTORY = "history"
-    const val HISTORY_STREAMER = "history/streamer/{streamerId}"
+    const val HISTORY_STREAMER = "history/streamer/{streamerId}?session={session}"
     const val STATS = "stats"
     const val STATS_STREAMER = "stats/streamer/{streamerId}"
     const val SETTINGS = "settings"
     const val LOGIN = "login"
     const val DATA = "data"
     const val NOTIFICATIONS = "notifications"
+    const val NOTIFICATION_BATCH = "notifications/batch/{eventKey}"
+    fun notificationBatch(key: String) = "notifications/batch/${android.net.Uri.encode(key)}"
     const val DIAGNOSTICS = "diagnostics"
 
     /** 标签 / 分组管理（用户要求：可删除、可排序）。 */
@@ -105,7 +109,8 @@ object Routes {
     const val DETAIL = "detail/{streamerId}"
 
     fun detail(streamerId: Long) = "detail/$streamerId"
-    fun historyStreamer(streamerId: Long) = "history/streamer/$streamerId"
+    fun historyStreamer(streamerId: Long, session: String? = null) =
+        "history/streamer/$streamerId" + (session?.let { "?session=${android.net.Uri.encode(it)}" } ?: "")
     fun statsStreamer(streamerId: Long) = "stats/streamer/$streamerId"
 }
 
@@ -395,6 +400,7 @@ fun BiliMonitorApp(
     appearanceSettings: com.example.bilimonitor.data.repository.AppearanceSettingsRepository
 ) {
     val navController = rememberNavController()
+    val notificationContext = androidx.compose.ui.platform.LocalContext.current
 
     val bottomDestinations = listOf(
         BottomDestination(Routes.HOME, "主播", Icons.Filled.Home),
@@ -418,6 +424,9 @@ fun BiliMonitorApp(
     // 通知点击深链（原规范 20/236）：解析出的目标在组合完成后导航一次并消费掉。
     LaunchedEffect(pendingDeepLink) {
         val target = pendingDeepLink ?: return@LaunchedEffect
+        // NavHost installs its graph in a later composition effect. A fast cold-start resolver
+        // can finish before that; wait for the first actual entry before navigating.
+        navController.currentBackStackEntryFlow.first()
         when (target) {
             is com.example.bilimonitor.data.repository.NotificationDeepLinkResolver.Target.Streamer ->
                 navController.navigate(Routes.detail(target.streamerId))
@@ -427,11 +436,15 @@ fun BiliMonitorApp(
             // 开播类仍走上面的详情页分支（它正常路径是客户端跳板，这里是打不开客户端时的兜底），
             // 两者共用 `evt:` 前缀，靠解析器的独立变体区分，导航层不猜 eventType。
             is com.example.bilimonitor.data.repository.NotificationDeepLinkResolver.Target.StreamerHistory ->
-                navController.navigate(Routes.historyStreamer(target.streamerId))
+                navController.navigate(Routes.historyStreamer(target.streamerId, target.sessionStableId))
+            is com.example.bilimonitor.data.repository.NotificationDeepLinkResolver.Target.Batch ->
+                navController.navigate(Routes.notificationBatch(target.eventKey))
             is com.example.bilimonitor.data.repository.NotificationDeepLinkResolver.Target.Diagnostics ->
                 navController.navigate(Routes.DIAGNOSTICS)
-            is com.example.bilimonitor.data.repository.NotificationDeepLinkResolver.Target.Unknown ->
-                Unit // 事件已被清理：留在当前页，不误跳
+            is com.example.bilimonitor.data.repository.NotificationDeepLinkResolver.Target.Unknown -> {
+                navController.navigate(Routes.NOTIFICATIONS)
+                android.widget.Toast.makeText(notificationContext, "通知对应记录已清理，已打开通知历史", android.widget.Toast.LENGTH_LONG).show()
+            }
         }
         onDeepLinkConsumed()
     }
@@ -530,11 +543,13 @@ fun BiliMonitorApp(
             }
             composable(
                 Routes.HISTORY_STREAMER,
-                arguments = listOf(navArgument("streamerId") { type = NavType.LongType })
+                arguments = listOf(navArgument("streamerId") { type = NavType.LongType },
+                    navArgument("session") { type = NavType.StringType; nullable = true; defaultValue = null })
             ) { entry ->
                 val streamerId = entry.arguments?.getLong("streamerId") ?: 0L
                 StreamerHistoryScreen(
                     streamerId = streamerId,
+                    focusedSession = entry.arguments?.getString("session"),
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -579,6 +594,25 @@ fun BiliMonitorApp(
             composable(Routes.LOGIN) { LoginScreen(onBack = { navController.popBackStack() }) }
             composable(Routes.DATA) { DataScreen(onBack = { navController.popBackStack() }) }
             composable(Routes.NOTIFICATIONS) { NotificationHistoryScreen(onBack = { navController.popBackStack() }) }
+            composable(Routes.NOTIFICATION_BATCH,
+                arguments = listOf(navArgument("eventKey") { type = NavType.StringType })
+            ) {
+                com.example.bilimonitor.ui.notifications.NotificationBatchScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenHistory = { navController.navigate(Routes.NOTIFICATIONS) },
+                    onOpenMember = { member, isEnd ->
+                        if (member.streamerId == null) {
+                            android.widget.Toast.makeText(notificationContext, "主播记录已删除", android.widget.Toast.LENGTH_SHORT).show()
+                        } else if (isEnd) {
+                            navController.navigate(Routes.historyStreamer(member.streamerId, member.sessionStableId))
+                        } else {
+                            notificationContext.startActivity(
+                                com.example.bilimonitor.notify.LiveRoomRedirectActivity.intent(
+                                    notificationContext, null, member.url, member.eventKey, member.hint))
+                        }
+                    }
+                )
+            }
             composable(Routes.DIAGNOSTICS) { DiagnosticsScreen(onBack = { navController.popBackStack() }) }
             composable(
                 Routes.DETAIL,

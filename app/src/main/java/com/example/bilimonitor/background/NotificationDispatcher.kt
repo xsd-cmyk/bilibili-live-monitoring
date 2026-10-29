@@ -1,6 +1,7 @@
 package com.example.bilimonitor.background
 
 import androidx.room.withTransaction
+import com.example.bilimonitor.core.timelineNow
 import com.example.bilimonitor.core.AppClock
 import com.example.bilimonitor.core.Ids
 import com.example.bilimonitor.data.local.DeliveryAttemptResult
@@ -21,6 +22,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 通知 Dispatcher（0.6.11 事务边界）：
@@ -35,30 +38,25 @@ class NotificationDispatcher @Inject constructor(
     private val logDao: LogDao,
     private val runtimeLockRepository: RuntimeLockRepository,
     private val poster: NotificationPoster,
-    private val clock: AppClock
+    private val clock: AppClock,
+    private val deliveryGuard: NotificationDeliveryGuard
 ) {
     /**
-     * 投递本轮到期通知。
-     *
-     * **调用点在 Tick 互斥锁之外**（MonitoringEngine：投递含封面下载，放锁内会把手动刷新、
-     * Worker、恢复补检全堵住），而窗口到期那条补投路径还在 appScope 里另起协程 ——
-     * 所以**两次 dispatchDue 并发是可能的**：正确性靠 [NotificationOutboxDao.claimOutbox]
-     * 的单条原子条件 UPDATE（`status IN ('PENDING','RETRY_WAIT') AND nextAttemptAt <= :now`
-     * 且 `attemptCount = attemptCount + 1`）保证，同一行只会有一个执行者抢到。
-     * 也正因为不持锁，本函数必须快速返回：
-     *  ① 开头先做一次"过期在途行回收"（见 [recoverInFlight]），
-     *  ② 单条封面下载收紧到 5s（见 NotificationPoster），
-     *  ③ 整个函数有 [DISPATCH_BUDGET_MS] 总预算，超时直接返回，
-     *     未处理的行保持原状态留到下一轮（**不标记失败**）。
+     * Deliver due rows under a single consumer mutex; database claim/CAS remains authoritative.
+     * The coordinator supplies deadlines independently of monitoring rounds. Startup and permission
+     * recovery may also call this function. Artwork is cache-only; a bounded dispatch budget keeps
+     * database/system stalls from monopolizing the consumer. Remaining rows retain their deadlines.
      */
-    suspend fun dispatchDue(limit: Int = 20) {
+    private val deliveryMutex = Mutex()
+
+    suspend fun dispatchDue(limit: Int = 20) = deliveryMutex.withLock {
         val now = clock.nowWall()
         // 运行期回收：原先只有冷启动与省电 Worker 会做，实时模式下进程可存活数天，
         // 一次中断的投递就会永久卡在 PROCESSING（findDue 不再取它）→ 通知静默丢失。
         recoverInFlight(now)
 
         val budget = withTimeoutOrNull(DISPATCH_BUDGET_MS) {
-            val due = outboxDao.findDue(now, limit)
+            val due = outboxDao.findDue(now, limit, clock.nowElapsed(), clock.bootId())
             for (outbox in due) {
                 try {
                     deliverOne(outbox.outboxId)
@@ -82,8 +80,10 @@ class NotificationDispatcher @Inject constructor(
                                     // ★ 与事务 B 的 FAILED 分支同一口径（第二轮审查发现）：
                                     //   原先这里只看 expiresAt，一条持续抛异常的行走会以固定 30 秒间隔
                                     //   一直重试到 24 小时 TTL（实时模式约 480 次/天），每次还写一条错误日志。
-                                    maxAttempts = MAX_ATTEMPTS
+                                    maxAttempts = MAX_ATTEMPTS, elapsed = clock.nowElapsed(), bootId = clock.bootId()
                                 )
+                                outboxDao.awaitObservation(outbox.outboxId,
+                                    outbox.timelineNow(clock) + RETRY_AFTER_FAILURE_MS, "DISPATCH_EXCEPTION")
                                 outboxDao.settleAttemptByOutbox(
                                     outboxId = outbox.outboxId,
                                     now = clock.nowWall(),
@@ -133,11 +133,11 @@ class NotificationDispatcher @Inject constructor(
         // 租约判定要 boot 感知，两个量都在这里取一次（见 findExpiredProcessing 的说明）
         val elapsed = clock.nowElapsed()
         val bootId = clock.bootId()
-        runCatching {
+        try {
             db.withTransaction {
-                outboxDao.expireOverduePending(now)
+                outboxDao.expireOverduePending(now, elapsed, bootId)
                 // 孤儿 DELIVERY_UNKNOWN 行（当前无写入者，属防御）也要纳入闭环，见 DAO 的说明
-                outboxDao.recoverOrphanDeliveryUnknown(now)
+                outboxDao.recoverOrphanDeliveryUnknown(now, elapsed, bootId)
                 if (outboxDao.findExpiredProcessing(now, elapsed, bootId, RECOVER_LIMIT).isNotEmpty()) {
                     outboxDao.settleExpiredAttempts(
                         now, elapsed, bootId, runtimeLockRepository.runtimeInstanceId
@@ -148,7 +148,9 @@ class NotificationDispatcher @Inject constructor(
                 // 一行永远停在"投递中"的记录（复查发现的缺陷）。每轮投递前顺手对齐一次。
                 historyDao.reconcileTerminalStatus(now)
             }
-        }.onFailure { e ->
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             runCatching {
                 logDao.insertAppError(
                     com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
@@ -158,11 +160,46 @@ class NotificationDispatcher @Inject constructor(
                     )
                 )
             }
+            throw e
         }
     }
 
     private suspend fun deliverOne(outboxId: String) {
         val now = clock.nowWall()
+        val original = outboxDao.findById(outboxId) ?: return
+        if (original.status != NotificationOutboxStatus.PENDING && original.status != NotificationOutboxStatus.RETRY_WAIT) return
+        val preparation = when (val result = deliveryGuard.prepare(original)) {
+            is NotificationDeliveryGuard.Result.Ready -> result
+            NotificationDeliveryGuard.Result.AwaitObservation -> {
+                outboxDao.awaitObservation(outboxId, original.timelineNow(clock) + 30_000L)
+                return
+            }
+            is NotificationDeliveryGuard.Result.Skip -> {
+                db.withTransaction {
+                    if (outboxDao.settleQueued(outboxId, result.status, result.reason) > 0) {
+                        if (historyDao.findByOutboxId(outboxId) == null) {
+                            historyDao.insert(NotificationHistoryEntity(
+                                Ids.newId(), original.eventKey, outboxId, null, original.notificationId,
+                                original.streamerId?.let { db.streamerDao().findById(it)?.stableId },
+                                original.aggregateId,
+                                if (result.status == NotificationOutboxStatus.EXPIRED) NotificationHistoryDeliveryStatus.EXPIRED
+                                else if (result.status == NotificationOutboxStatus.SENT) NotificationHistoryDeliveryStatus.SENT
+                                else NotificationHistoryDeliveryStatus.CANCELLED,
+                                original.attemptCount, null, null, original.createdAt, now, result.reason))
+                        }
+                        historyDao.reconcileTerminalStatus(now)
+                        original.aggregateId?.let {
+                            aggregateDao.casStatus(it, NotificationAggregateStatus.FROZEN,
+                                if (result.status == NotificationOutboxStatus.EXPIRED) NotificationAggregateStatus.EXPIRED
+                                else if (result.status == NotificationOutboxStatus.SENT) NotificationAggregateStatus.DISPATCHED
+                                else NotificationAggregateStatus.CANCELLED, now, aggregateDao.countActiveEvents(it))
+                        }
+                    }
+                }
+                return
+            }
+        }
+        val prepared = preparation.row
         val runtimeInstanceId = runtimeLockRepository.runtimeInstanceId
         val deliveryAttemptId = Ids.newId()
         val attemptId = Ids.newId()
@@ -179,6 +216,14 @@ class NotificationDispatcher @Inject constructor(
                 deliveryAttemptId = deliveryAttemptId
             )
             if (rows > 0) {
+                check(outboxDao.prepareClaimed(outboxId, deliveryAttemptId, prepared.payloadJson, prepared.expiresAt) == 1)
+                prepared.aggregateId?.let { aggregateId ->
+                    val ids = com.example.bilimonitor.data.repository.NotificationPayloads.decodeBatch(prepared.payloadJson)
+                        ?.items?.mapNotNull { it.eventId }.orEmpty()
+                    if (ids.isNotEmpty()) aggregateDao.retainActiveEvents(aggregateId, ids, now)
+                    deferBatchMembers(prepared, preparation.deferred)
+
+                }
                 // 不用 `!!`：claim 与这里之间若发生清理（终态行被删）或软删除取消，
                 // 行可能已经不在了 —— 那种情况下本次投递直接放弃（返回 null 视作未 claim），
                 // 而不是把 NPE 抛到 Tick 里。
@@ -213,7 +258,7 @@ class NotificationDispatcher @Inject constructor(
                                 attemptCount = outbox.attemptCount,
                                 deliveredAt = null,
                                 reason = null,
-                                recordedAt = now,
+                                recordedAt = outbox.createdAt,
                                 updatedAt = now,
                                 detail = null
                             )
@@ -233,9 +278,11 @@ class NotificationDispatcher @Inject constructor(
         // 事务 B：Attempt(finished) + Outbox CAS 回写。
         db.withTransaction {
             val finishedAt = clock.nowWall()
-            outboxDao.finishAttemptRow(attemptId, finishedAt, outcome.result, outcome.error)
+            val interacted = historyDao.findByOutboxId(outboxId)?.reason in setOf("USER_CLICKED", "USER_DISMISSED")
+            val deliveryResult = if (interacted) DeliveryAttemptResult.SENT else outcome.result
+            outboxDao.finishAttemptRow(attemptId, finishedAt, deliveryResult, if (interacted) null else outcome.error)
             val attemptNo = outbox.attemptCount
-            val (newStatus, sentAt, nextAttemptAt, lastError) = when (outcome.result) {
+            val (newStatus, sentAt, nextAttemptAt, lastError) = when (deliveryResult) {
                 DeliveryAttemptResult.SENT -> {
                     if (outbox.aggregateId != null) {
                         // eventCount 是派生缓存，权威值 = COUNT(notification_aggregate_event)。
@@ -274,19 +321,23 @@ class NotificationDispatcher @Inject constructor(
                     Quad(NotificationOutboxStatus.SENT, finishedAt, null, null)
                 }
                 DeliveryAttemptResult.DELIVERY_UNKNOWN -> {
-                    if (finishedAt > outbox.expiresAt) {
-                        Quad(NotificationOutboxStatus.EXPIRED, null, null, outcome.error)
-                    } else {
-                        Quad(NotificationOutboxStatus.RETRY_WAIT, null, finishedAt + backoff(attemptNo), outcome.error)
-                    }
-                }
-                DeliveryAttemptResult.FAILED -> {
-                    if (finishedAt > outbox.expiresAt) {
+                    if (outbox.timelineNow(clock) >= outbox.expiresAt) {
                         Quad(NotificationOutboxStatus.EXPIRED, null, null, outcome.error)
                     } else if (attemptNo >= MAX_ATTEMPTS) {
                         Quad(NotificationOutboxStatus.FAILED, null, null, outcome.error)
                     } else {
-                        Quad(NotificationOutboxStatus.RETRY_WAIT, null, finishedAt + backoff(attemptNo), outcome.error)
+                        Quad(NotificationOutboxStatus.RETRY_WAIT, null, outbox.timelineNow(clock) + backoff(attemptNo), outcome.error)
+                    }
+                }
+                DeliveryAttemptResult.FAILED -> {
+                    if (outbox.timelineNow(clock) >= outbox.expiresAt || outcome.error == "NOTIFICATION_STALE") {
+                        Quad(NotificationOutboxStatus.EXPIRED, null, null, outcome.error)
+                    } else if (outcome.error == "PERMISSION_DENIED" || outcome.error?.startsWith("CHANNEL_DISABLED:") == true) {
+                        Quad(NotificationOutboxStatus.FAILED, null, null, outcome.error)
+                    } else if (attemptNo >= MAX_ATTEMPTS) {
+                        Quad(NotificationOutboxStatus.FAILED, null, null, outcome.error)
+                    } else {
+                        Quad(NotificationOutboxStatus.RETRY_WAIT, null, outbox.timelineNow(clock) + backoff(attemptNo), outcome.error)
                     }
                 }
             }
@@ -324,26 +375,34 @@ class NotificationDispatcher @Inject constructor(
         }
     }
 
+    /** Called only after the parent claim and binding release, in the same Room transaction. */
+    internal suspend fun deferBatchMembers(parent: com.example.bilimonitor.data.local.entity.NotificationOutboxEntity,
+        members: List<com.example.bilimonitor.data.repository.LiveNotificationPayload>) {
+        for (item in members) {
+            val event = item.eventId?.let { db.liveEventDao().findById(it) } ?: continue
+            val type = if (parent.eventType == com.example.bilimonitor.data.local.NotificationEventType.BATCH_END)
+                com.example.bilimonitor.data.local.NotificationEventType.END_CONFIRMED
+            else com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED
+            com.example.bilimonitor.data.repository.NotificationOutboxWriter.createSingle(db, clock, event,
+                event.streamerId, type,
+                com.example.bilimonitor.data.repository.NotificationPayloads.json.encodeToString(
+                    com.example.bilimonitor.data.repository.LiveNotificationPayload.serializer(), item),
+                clock.nowWall(), true, parent.configVersion)
+        }
+    }
+
     private fun backoff(attempt: Int): Long =
-        (BACKOFF_BASE_MS * (1L shl attempt.coerceAtMost(6))).coerceAtMost(MAX_BACKOFF_MS)
+        (BACKOFF_BASE_MS * (1L shl (attempt - 1).coerceIn(0, 6))).coerceAtMost(MAX_BACKOFF_MS)
 
     data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
     companion object {
         const val LEASE_MS = 30_000L
         const val MAX_ATTEMPTS = 5
-        const val BACKOFF_BASE_MS = 60_000L
-        const val MAX_BACKOFF_MS = 60 * 60 * 1000L
+        const val BACKOFF_BASE_MS = 5_000L
+        const val MAX_BACKOFF_MS = 60_000L
 
-        /**
-         * 一次 `dispatchDue` 的总时间预算。
-         *
-         * 它不在 Tick 互斥锁内（见 [dispatchDue]），但**被这一轮 tick 等待**：
-         * 20 条 × 封面下载 5s 最坏就是 100s，那期间本轮 tick 迟迟不结束、下一轮被无限推迟，
-         * 手动刷新与省电 Worker 也只能排在同一个 Room 执行器后面，表现为"监控卡住"。
-         * 给一个总预算，超时就返回，
-         * 剩下的行保持原状态（PENDING/RETRY_WAIT 下一轮照常取；已 claim 的靠下一轮回收）。
-         */
+        /** Bound one drain; the coordinator continues queued work after this call returns. */
         const val DISPATCH_BUDGET_MS = 15_000L
 
         /** 单轮回收扫描上限（与启动恢复保持一致）。 */

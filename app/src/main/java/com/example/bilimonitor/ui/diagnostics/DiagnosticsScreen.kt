@@ -233,8 +233,8 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
                         Spacer(Modifier.height(6.dp))
                         Text(state.health?.userMessage ?: "…")
                         Text(
-                            "监控 ${state.health?.monitoredCount ?: 0} 位主播 · 其中 ${state.health?.liveCount ?: 0} 位在播 · " +
-                                "封禁中：${state.health?.bannedCount ?: 0} 位 · " +
+                            "监控 ${state.health?.monitoredCount ?: "未知"} 位主播 · 其中 ${state.health?.liveCount ?: "未知"} 位在播 · " +
+                                "封禁中：${state.health?.bannedCount ?: "未知"} 位 · " +
                                 "前台服务：${if (state.health?.foregroundServiceRunning == true) "运行中" else "未运行"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

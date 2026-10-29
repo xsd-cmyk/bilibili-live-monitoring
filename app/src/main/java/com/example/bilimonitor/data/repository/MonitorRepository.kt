@@ -125,17 +125,27 @@ class RuntimeLockRepository @Inject constructor(
         runtimeLockDao.releaseLease(lease.leaseId, clock.nowWall())
     }
 
-    suspend fun enterMaintenance(mode: MaintenanceMode): Boolean =
-        runtimeLockDao.enterMaintenance(mode, clock.nowWall()) > 0
+    suspend fun enterMaintenance(lease: MaintenanceLease): Boolean =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            runtimeLockDao.enterMaintenance(lease.mode, clock.nowWall(), lease.owner, clock.nowElapsed(), clock.bootId()) > 0
+        }
 
     /**
      * 用户主动发起的维护（导出/备份/恢复/清理）：允许夺走有效期内的监控租约。
      * 详见 [RuntimeLockDao.enterMaintenanceForcing] 的说明。
      */
-    suspend fun takeOverForMaintenance(mode: MaintenanceMode): Boolean =
-        runtimeLockDao.enterMaintenanceForcing(mode, clock.nowWall()) > 0
-    suspend fun exitMaintenance(mode: MaintenanceMode): Boolean =
-        runtimeLockDao.exitMaintenance(mode, clock.nowWall()) > 0
+    data class MaintenanceLease(val mode: MaintenanceMode, val owner: String = "maintenance-" + UUID.randomUUID())
+
+    // The caller creates the handle before its try/finally. Even cancellation immediately after
+    // Room commits cannot lose ownership; a failed contender can only release its own token.
+    suspend fun takeOverForMaintenance(lease: MaintenanceLease): Boolean =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            runtimeLockDao.enterMaintenanceForcing(lease.mode, clock.nowWall(), lease.owner) > 0
+        }
+    suspend fun exitMaintenance(lease: MaintenanceLease): Boolean =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            runtimeLockDao.exitMaintenance(lease.mode, clock.nowWall(), lease.owner) > 0
+        }
 
     /** 当前监控代际（恢复检查会话的 CAS 依据）。 */
     suspend fun monitorGeneration(): Long = runtimeLockDao.currentMonitorGeneration()
@@ -766,7 +776,8 @@ class MonitorRepository @Inject constructor(
                         db = db, streamerId = streamer.id, streamerStableId = streamer.stableId,
                         sessionStableId = openSession.stableId,
                         eventType = changeType,
-                        changeKey = title, payloadJson = payload, now = now, configVersion = configVersion
+                        changeKey = title, payloadJson = payload, now = now, configVersion = configVersion,
+                        clock = clock
                     )
                 }
             }
@@ -832,7 +843,8 @@ class MonitorRepository @Inject constructor(
                         db = db, streamerId = streamer.id, streamerStableId = streamer.stableId,
                         sessionStableId = openSession.stableId,
                         eventType = changeType,
-                        changeKey = label, payloadJson = payload, now = now, configVersion = configVersion
+                        changeKey = label, payloadJson = payload, now = now, configVersion = configVersion,
+                        clock = clock
                     )
                 }
             }

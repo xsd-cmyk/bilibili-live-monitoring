@@ -1,5 +1,7 @@
 package com.example.bilimonitor.data.repository
 
+import kotlinx.serialization.json.encodeToStream
+
 import android.content.ContentValues
 import android.content.Context
 import android.os.Environment
@@ -512,11 +514,17 @@ class BackupRepository @Inject constructor(
         context.packageManager.getPackageInfo(context.packageName, 0).versionName
     }.getOrNull() ?: "unknown"
 
-    fun serializeToString(file: BackupFile): String =
-        json.encodeToString(BackupFile.serializer(), file)
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    fun serializeToString(file: BackupFile): String {
+        val output = java.io.ByteArrayOutputStream()
+        json.encodeToStream(BackupFile.serializer(), file,
+            com.example.bilimonitor.core.BoundedUtf8.output(output, MAX_BACKUP_FILE_BYTES))
+        return output.toString(Charsets.UTF_8.name())
+    }
 
     /** 写入公共下载目录（MediaStore，无需存储权限）。返回文件名。 */
     suspend fun exportBackup(): Result<String> = runCatching {
+        val maintenance = RuntimeLockRepository.MaintenanceLease(com.example.bilimonitor.data.local.MaintenanceMode.BACKUP)
         // 维护权获取结果必须检查：原实现忽略返回值，与其他三处（导出 HTML、清理、恢复）
         // 的 `check(...)` 口径不一致，导致导出可与清理/恢复并发运行、读到不一致的数据。
         // 用户主动点"导出备份"时用接管版本：租约在有效期内也能立即取得维护权，
@@ -527,7 +535,7 @@ class BackupRepository @Inject constructor(
             //   放在 try 之外则 finally 不执行，maintenanceMode 停在 'BACKUP'，
             //   而引擎取租约要求 'OFF' ⇒ **监控停摆到下次冷启动**。
             //   （与导出 HTML / 恢复的同型修复一致。）
-            check(runtimeLockRepository.takeOverForMaintenance(com.example.bilimonitor.data.local.MaintenanceMode.BACKUP)) {
+            check(runtimeLockRepository.takeOverForMaintenance(maintenance)) {
                 "无法取得维护权（导出/恢复/清理正在进行），请稍后再试"
             }
             val file = serializeBackup()
@@ -550,7 +558,7 @@ class BackupRepository @Inject constructor(
             //   而引擎取租约要求 maintenanceMode='OFF'，监控会**永久停摆**，
             //   之后每次导出/恢复/清理还都报"正在进行"，只能等冷启动自救。
             withContext(NonCancellable) {
-                runtimeLockRepository.exitMaintenance(com.example.bilimonitor.data.local.MaintenanceMode.BACKUP)
+                runtimeLockRepository.exitMaintenance(maintenance)
             }
         }
     }
@@ -745,11 +753,12 @@ class BackupRepository @Inject constructor(
         // ★ 每次恢复开头就把降级计数清零（字段见 [unknownSessionEnums] 说明）：
         //   原先清零点在事务内部，而"维护权失败 / 文件解析失败"这两条提前 return 的路径
         //   走不到那里 —— 上一次的计数会被这一次当成自己的降级次数报进警告。
-        unknownSessionEnums = 0
+        val maintenance = RuntimeLockRepository.MaintenanceLease(com.example.bilimonitor.data.local.MaintenanceMode.RESTORE)
         try {
-            check(runtimeLockRepository.takeOverForMaintenance(com.example.bilimonitor.data.local.MaintenanceMode.RESTORE)) {
+            check(runtimeLockRepository.takeOverForMaintenance(maintenance)) {
                 "无法进入维护模式，请稍后再试"
             }
+            unknownSessionEnums = 0
         val file = withContext(Dispatchers.Default) { parseBackupFile(content) } ?: run {
             restoreDao.casTransition(runId, RestoreRunStatus.APPLYING, RestoreRunStatus.FAILED, now, RestoreFinishReason.FAILED, 0)
             return RestoreSummary(runId, emptyMap(), emptyMap(), emptyMap(), listOf("文件解析失败"))
@@ -1360,7 +1369,7 @@ class BackupRepository @Inject constructor(
             // 同样必须 NonCancellable：取消时这个 Room 写不执行的话，maintenanceMode 会永远停在
             // RESTORE，引擎取不到租约（要求 maintenanceMode='OFF'）⇒ 监控永久停摆。
             withContext(NonCancellable) {
-                runtimeLockRepository.exitMaintenance(com.example.bilimonitor.data.local.MaintenanceMode.RESTORE)
+                runtimeLockRepository.exitMaintenance(maintenance)
             }
         }
     }
@@ -1517,8 +1526,13 @@ class BackupRepository @Inject constructor(
                 backupSizeRejectReason(size)?.let { reason -> return@withContext "$name（$reason）" to "" }
                 val fileUri = android.content.ContentUris.withAppendedId(uri, id)
                 val content = runCatching {
-                    resolver.openInputStream(fileUri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                }.getOrNull()
+                    resolver.openInputStream(fileUri)?.use { com.example.bilimonitor.core.BoundedUtf8.read(it, MAX_BACKUP_FILE_BYTES) }
+                }.getOrElse { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (error is com.example.bilimonitor.core.BackupTooLargeException)
+                        return@withContext "$name（${error.message}）" to ""
+                    null
+                }
                 if (content != null) return@withContext name to content
             }
         }
@@ -1548,10 +1562,14 @@ class BackupRepository @Inject constructor(
         backupSizeRejectReason(querySizeBytes(uri))?.let { reason -> return@withContext "$name（$reason）" to "" }
         runCatching {
             val content = context.contentResolver.openInputStream(uri)?.use {
-                it.readBytes().toString(Charsets.UTF_8)
+                com.example.bilimonitor.core.BoundedUtf8.read(it, MAX_BACKUP_FILE_BYTES)
             } ?: return@runCatching null
             name to content
-        }.getOrNull()
+        }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            if (error is com.example.bilimonitor.core.BackupTooLargeException)
+                "$name（${error.message}）" to "" else null
+        }
     }
 
     private fun queryDisplayName(uri: android.net.Uri): String? = runCatching {

@@ -183,8 +183,8 @@ class NotificationRepository @Inject constructor(
         val elapsed = clock.nowElapsed()
         val bootId = clock.bootId()
         return db.withTransaction {
-            outboxDao.recoverOrphanDeliveryUnknown(now)
-            val expiredPending = outboxDao.expireOverduePending(now)
+            outboxDao.recoverOrphanDeliveryUnknown(now, elapsed, bootId)
+            val expiredPending = outboxDao.expireOverduePending(now, elapsed, bootId)
             val settled = if (outboxDao.findExpiredProcessing(now, elapsed, bootId, 100).isEmpty()) {
                 expiredPending
             } else {
@@ -230,5 +230,8 @@ class NotificationRepository @Inject constructor(
     }
 
     /** 通知能力恢复后：未过期且 FAILED 的行有限转 RETRY_WAIT（0.6.11，带上限）。 */
-    suspend fun reviveFailed(now: Long, limit: Int = 50): Int = outboxDao.reviveFailed(now, limit)
+    suspend fun reviveFailed(now: Long, limit: Int = 50): Int = outboxDao.reviveFailed(now, limit, clock.nowElapsed(), clock.bootId())
+
+    suspend fun reviveCapabilityFailures(now: Long, availableChannels: List<String>): Int =
+        outboxDao.reviveCapabilityFailures(now, availableChannels, 50, clock.nowElapsed(), clock.bootId())
 }

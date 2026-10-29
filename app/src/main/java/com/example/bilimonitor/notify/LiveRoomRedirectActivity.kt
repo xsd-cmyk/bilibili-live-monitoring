@@ -38,6 +38,8 @@ class LiveRoomRedirectActivity : Activity() {
         val roomId = intent.getLongExtra(EXTRA_ROOM_ID, -1L).takeIf { it > 0L }
         val httpsUrl = UrlPolicy.validate(intent.getStringExtra(EXTRA_HTTPS_URL))
         val eventKey = intent.getStringExtra(EXTRA_EVENT_KEY).orEmpty()
+        val hint = intent.getStringExtra(NotificationClickHint.EXTRA)
+        NotificationInteractions.record(this, eventKey)
 
         // ① 哔哩哔哩客户端（scheme 由对方注册，系统解析；不硬编码包名）
         if (roomId != null) {
@@ -60,7 +62,7 @@ class LiveRoomRedirectActivity : Activity() {
             Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra(MainActivity.EXTRA_EVENT_KEY, eventKey)
-                putExtra(MainActivity.EXTRA_URL, httpsUrl)
+                putExtra(NotificationClickHint.EXTRA, hint)
             }
         )
         finish()
@@ -88,11 +90,15 @@ class LiveRoomRedirectActivity : Activity() {
          * @param httpsUrl  已过 [UrlPolicy] 的 https 地址（调用方保证）
          * @param eventKey  兜底打开应用内页面时用于定位主播
          */
-        fun intent(context: Context, roomId: Long?, httpsUrl: String?, eventKey: String): Intent =
+        fun intent(context: Context, roomId: Long?, httpsUrl: String?, eventKey: String, hint: String? = null): Intent =
             Intent(context, LiveRoomRedirectActivity::class.java).apply {
-                putExtra(EXTRA_ROOM_ID, roomId ?: -1L)
+                val inferredRoom = UrlPolicy.validate(httpsUrl)?.let {
+                    Uri.parse(it).lastPathSegment?.toLongOrNull()?.takeIf { id -> id > 0 }
+                }
+                putExtra(EXTRA_ROOM_ID, roomId ?: inferredRoom ?: -1L)
                 putExtra(EXTRA_HTTPS_URL, httpsUrl)
                 putExtra(EXTRA_EVENT_KEY, eventKey)
+                putExtra(NotificationClickHint.EXTRA, hint)
             }
     }
 }

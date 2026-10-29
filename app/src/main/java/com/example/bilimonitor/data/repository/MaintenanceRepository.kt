@@ -23,6 +23,8 @@ import javax.inject.Named
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 
+class MaintenanceBusyException : IllegalStateException("无法进入维护模式（清理已延后）")
+
 private val Context.maintenanceDataStore by preferencesDataStore(name = "maintenance")
 
 /**
@@ -91,7 +93,8 @@ class MaintenanceRepository @Inject constructor(
         val monitoringErrorsDeleted: Int = 0,
         val appErrorsDeleted: Int = 0,
         val crashRecordsDeleted: Int = 0,
-        val exportSnapshotsDeleted: Int = 0
+        val exportSnapshotsDeleted: Int = 0,
+        val auditLogsDeleted: Int = 0
     )
 
     /** 容量使用情况（供界面展示与预警判断）。 */
@@ -216,7 +219,7 @@ class MaintenanceRepository @Inject constructor(
      * 在 PRAGMA foreign_keys=ON 下必然抛 FOREIGN KEY constraint failed，
      * 且异常被外层 runCatching 吞掉，导致通知历史与聚合清理永不执行。
      */
-    suspend fun runCleanup(): Result<CleanupSummary> = runCatching {
+    suspend fun runCleanup(background: Boolean = false): Result<CleanupSummary> = runCatching {
         // ★ 用"接管版"维护锁（台账 H19-A3/B13）：导出/备份早已改成 takeOverForMaintenance，
         //   清理与恢复却还在用严格版 enterMaintenance（要求监控租约为空或已过期）。
         //   而引擎每轮 Tick 都会续上 90 秒租约、Tick 间隔又短于它 ——
@@ -224,10 +227,11 @@ class MaintenanceRepository @Inject constructor(
         //   （StartupRecovery 里"先跑一轮 Tick 再清理"必然失败并被 runCatching 吞掉），
         //   用户点「立即清理」还会随机得到"导出/恢复正在进行"这种与事实无关的原因。
         //   接管会递增 monitorGeneration 并清空 fencingToken，在途写入自然失效，数据安全有保证。
-        check(runtimeLockRepository.takeOverForMaintenance(MaintenanceMode.DATABASE_REPAIR)) {
-            "无法进入维护模式（清理已取消）"
-        }
+        val maintenance = RuntimeLockRepository.MaintenanceLease(MaintenanceMode.DATABASE_REPAIR)
         try {
+            val acquired = if (background) runtimeLockRepository.enterMaintenance(maintenance)
+                else runtimeLockRepository.takeOverForMaintenance(maintenance)
+            if (!acquired) throw MaintenanceBusyException()
             val now = clock.nowWall()
             var sessionsDeleted = 0
             var outboxDeleted = 0
@@ -238,6 +242,7 @@ class MaintenanceRepository @Inject constructor(
             var appErrorsDeleted = 0
             var crashRecordsDeleted = 0
             var exportSnapshotsDeleted = 0
+            var auditLogsDeleted = 0
 
             val mode = capacityModeFirst()
             if (mode.first == MODE_MAX_RECORDS) {
@@ -338,7 +343,7 @@ class MaintenanceRepository @Inject constructor(
             // 4.5) 先把"批量通知已终态且已过 TTL（不可能再复活）"的 FROZEN 聚合收尾成 EXPIRED：
             //      否则它会永久停在 FROZEN —— findInProgress 不取它、findTerminalBefore 也不认它，
             //      行与绑定行无限期堆积（复查发现的缺陷，两个独立代理分别指出）。
-            db.notificationAggregateDao().settleStuckFrozen(now)
+            db.notificationAggregateDao().settleStuckFrozen(now, clock.nowElapsed(), clock.bootId())
             val staleAggregates = db.notificationAggregateDao().findTerminalBefore(aggregateBefore, CLEANUP_BATCH)
             if (staleAggregates.isNotEmpty()) {
                 val aggregateIds = staleAggregates.map { it.aggregateId }
@@ -364,6 +369,8 @@ class MaintenanceRepository @Inject constructor(
             appErrorsDeleted = logDao.cleanupAppErrors(
                 before = now - 7L * day, retainNewest = LOG_RETAIN_APP, limit = CLEANUP_BATCH
             )
+
+            auditLogsDeleted = logDao.cleanupAudit(now - 90L * day, 10_000, CLEANUP_BATCH)
 
             // 7) 导出快照保留（原实现 ExportDao.deleteExpired 从未被调用 → 快照永久堆积）
             exportSnapshotsDeleted = db.exportDao().deleteExpired(now)
@@ -402,7 +409,8 @@ class MaintenanceRepository @Inject constructor(
                 monitoringErrorsDeleted = monitoringErrorsDeleted,
                 appErrorsDeleted = appErrorsDeleted,
                 crashRecordsDeleted = crashRecordsDeleted,
-                exportSnapshotsDeleted = exportSnapshotsDeleted
+                exportSnapshotsDeleted = exportSnapshotsDeleted,
+                auditLogsDeleted = auditLogsDeleted
             )
         } finally {
             // ★ 必须 NonCancellable：这是 suspend 的 Room 写，而 runCleanup() 会被 UI 的
@@ -412,7 +420,7 @@ class MaintenanceRepository @Inject constructor(
             //   于是**监控会永久停摆**，只有冷启动的 resetStaleMaintenance 能自救。
             //   与 ExportRepository / BackupRepository 的同类修复同因。
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
-                runtimeLockRepository.exitMaintenance(MaintenanceMode.DATABASE_REPAIR)
+                runtimeLockRepository.exitMaintenance(maintenance)
             }
         }
     }

@@ -48,6 +48,7 @@ import com.example.bilimonitor.ui.common.performHistoryExport
 import com.example.bilimonitor.ui.common.recentSessionText
 import com.example.bilimonitor.ui.common.sortedBySessionSortOrder
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -141,36 +142,24 @@ class HistoryListViewModel @Inject constructor(
     // 显式标注可空类型：stateIn 的初值传 null 时靠推断得到 `List<…>?`，
     // 写清楚比让读者去推更省事（下面的 loading 判断也依赖这个可空性）。
     private val summaries: StateFlow<List<StreamerHistorySummary>?> = combine(
-        liveSessionDao.observeRecent(1000),
+        liveSessionDao.observeSummaries(),
         streamerDao.observeActive(),
         query,
         sortOrder
     ) { sessions, streamers, q, order ->
-        // 分组必须带上**进行中**的场次（endTime == null）：最新一场常常正是正在直播的那一场，
-        // 把它整体过滤掉会让"最近"退回上一场（旧实现干脆显示"—"），与"最近"这个词自相矛盾。
-        val grouped = sessions.groupBy { it.streamerId }
+        val grouped = sessions.associateBy { it.streamerId }
         streamers
             .filter { q.isBlank() || it.name.contains(q.trim()) }
             .map { s ->
-                val list = grouped[s.id].orEmpty()
-                // 「最新一场」= 开播时间最晚的那一场，键与 DAO 的 COALESCE(startTime, createdAt) 同源：
-                // 同一主播的场次首尾相接、不重叠，"开播最晚"就是"最近的一场"；反过来按 endTime 取最大，
-                // 在数据交叠（人工补录、异常中断留下的重叠场次）时会挑中一场更早的场次，
-                // 而且进行中的场次 endTime 为 null，会被整场丢掉 —— 正在直播的主播就查无此场了。
-                val latest = list.maxByOrNull { it.startTime ?: it.createdAt }
-                // "最近一场已结束的场次"＝这一组里 endTime 非空的最大值，**不能**拿「最新一场」代替：
-                // 正在直播时最新一场的 endTime 就是 null，根本取不到"上一次下播"。
-                // 也不能靠"按 endTime 排序取首条"：人工补录 / 异常中断会留下交叠的场次，
-                // 只有"下播时刻最大"才真的等于"这个主播最近一次结束直播"。
-                val lastClosedEnd = list.mapNotNull { it.endTime }.maxOrNull()
+                val summary = grouped[s.id]
                 StreamerHistorySummary(
                     streamerId = s.id,
                     name = s.name,
                     avatarUrl = s.avatarUrl,
-                    latestSessionStartAt = latest?.let { it.startTime ?: it.createdAt },
+                    latestSessionStartAt = summary?.latestSessionStartAt,
                     // 下播时间可能为 null（还在直播）：交给展示层说"直播中"，界面不会出现 null/空白
-                    latestSessionEndAt = latest?.endTime,
-                    lastClosedEndAt = lastClosedEnd
+                    latestSessionEndAt = summary?.latestSessionEndAt,
+                    lastClosedEndAt = summary?.lastClosedEndAt
                 )
             }
             // 排序方式由用户在顶栏「排序」里四选一（默认第 3 种：下播时间 + 直播中置顶）：
@@ -186,7 +175,8 @@ class HistoryListViewModel @Inject constructor(
             )
     // 初值用 null 而不是 emptyList()：界面要区分"还没查完"与"确实没有记录"，
     // 否则进页面会先闪一下"还没有直播记录"再刷出列表（loading 字段此前恒为 false，是个死字段）。
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // 导出选择对话框要的是非空列表（它自己也区分不了加载中），这里顺手兜底为空
     val allStreamers: StateFlow<List<StreamerHistorySummary>> = summaries

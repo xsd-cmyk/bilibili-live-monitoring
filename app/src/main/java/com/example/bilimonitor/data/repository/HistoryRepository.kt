@@ -28,7 +28,8 @@ data class ManualCorrection(
     /** 修正后的直播间标题（可选）。 */
     val title: String? = null,
     /** 修正后的直播分区（可选，留空表示不改动）。 */
-    val area: String? = null
+    val area: String? = null,
+    val noteChanged: Boolean = note != null
 )
 
 sealed interface CorrectionResult {
@@ -93,13 +94,21 @@ class HistoryRepository @Inject constructor(
         val start = newStart ?: session.startTime
         val end = newEnd ?: session.endTime
         val duration = newDuration ?: session.durationSeconds
-        val timesChanged = provided >= 2
+        val timesChanged = provided >= 2 &&
+            (start != session.startTime || end != session.endTime || duration != session.durationSeconds)
+        val startChanged = timesChanged && start != session.startTime
+        val endChanged = timesChanged && end != session.endTime
+        val durationChanged = timesChanged && duration != session.durationSeconds
+        val actual = correction.copy(
+            startTime = start.takeIf { startChanged }, endTime = end.takeIf { endChanged },
+            durationSeconds = duration.takeIf { durationChanged },
+            title = correction.title?.takeIf { it != session.titleAtStart },
+            area = correction.area?.takeIf { it != session.areaAtStart },
+            noteChanged = correction.noteChanged && correction.note != session.note)
         if (start != null && end != null && end < start) {
             return CorrectionResult.Invalid("下播时间不能早于开播时间")
         }
-        if (!timesChanged && correction.note == session.note &&
-            (correction.title == null || correction.title == session.titleAtStart)
-        ) {
+        if (!timesChanged && !actual.noteChanged && actual.title == null && actual.area == null) {
             return CorrectionResult.Invalid("至少需要提供两项：开播时间 / 下播时间 / 时长")
         }
         // 手动补出下播时间视为人工关播确认
@@ -108,17 +117,18 @@ class HistoryRepository @Inject constructor(
         return db.withTransaction {
             val rows = liveSessionDao.casManualCorrect(
                 id = session.id,
-                startTime = if (timesChanged) start else null,
-                endTime = if (timesChanged) end else null,
-                durationSeconds = if (timesChanged) duration else null,
-                startSource = if (timesChanged && start != null) DataSource.USER_CORRECTED.name else null,
-                endSource = if (timesChanged && end != null) DataSource.USER_CORRECTED.name else null,
-                durationSource = if (timesChanged && duration != null) DataSource.USER_CORRECTED.name else null,
-                startConfidence = if (timesChanged && start != null) DataConfidence.CORRECTED.name else null,
-                endConfidence = if (timesChanged && end != null) DataConfidence.CORRECTED.name else null,
-                durationConfidence = if (timesChanged && duration != null) DataConfidence.CORRECTED.name else null,
+                startTime = if (startChanged) start else null,
+                endTime = if (endChanged) end else null,
+                durationSeconds = if (durationChanged) duration else null,
+                startSource = if (startChanged && start != null) DataSource.USER_CORRECTED.name else null,
+                endSource = if (endChanged && end != null) DataSource.USER_CORRECTED.name else null,
+                durationSource = if (durationChanged && duration != null) DataSource.USER_CORRECTED.name else null,
+                startConfidence = if (startChanged && start != null) DataConfidence.CORRECTED.name else null,
+                endConfidence = if (endChanged && end != null) DataConfidence.CORRECTED.name else null,
+                durationConfidence = if (durationChanged && duration != null) DataConfidence.CORRECTED.name else null,
                 confirmedOfflineAt = confirmedOffline,
                 note = correction.note,
+                noteChanged = actual.noteChanged,
                 expectedCorrectionVersion = session.correctionVersion,
                 now = now
             )
@@ -153,7 +163,7 @@ class HistoryRepository @Inject constructor(
                     sessionStableId = session.stableId,
                     baseCorrectionVersion = session.correctionVersion,
                     newCorrectionVersion = session.correctionVersion + 1,
-                    changedFieldsJson = changedFieldsJson(correction),
+                    changedFieldsJson = changedFieldsJson(actual),
                     source = DataSource.USER_CORRECTED,
                     createdAt = now,
                     operationId = Ids.newId()
@@ -164,7 +174,7 @@ class HistoryRepository @Inject constructor(
                     auditId = Ids.newId(), operationId = Ids.newId(), actor = "USER",
                     action = "MANUAL_CORRECT_SESSION", targetType = "live_session",
                     targetStableId = session.stableId, occurredAt = now,
-                    detailJson = changedFieldsJson(correction)
+                    detailJson = changedFieldsJson(actual)
                 )
             )
             streamerDao.bumpSourceDataVersion(now)
@@ -363,7 +373,7 @@ class HistoryRepository @Inject constructor(
         if (c.startTime != null) fields.add("\"startTime\"")
         if (c.endTime != null) fields.add("\"endTime\"")
         if (c.durationSeconds != null) fields.add("\"durationSeconds\"")
-        if (c.note != null) fields.add("\"note\"")
+        if (c.noteChanged) fields.add("\"note\"")
         if (c.title != null) fields.add("\"title\"")
         if (c.area != null) fields.add("\"area\"")
         return "[${fields.joinToString(",")}]"

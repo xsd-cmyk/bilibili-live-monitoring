@@ -194,7 +194,7 @@ fun NotificationHistoryScreen(onBack: () -> Unit, viewModel: NotificationHistory
 private fun eventLabel(eventKey: String, detail: String?): String = when {
     detail == "RECOVERED" || eventKey.endsWith(":recovered") -> "系统恢复通知"
     eventKey.startsWith("evt:") -> "开播/关播通知"
-    eventKey.startsWith("agg:") -> "批量开播通知"
+    eventKey.startsWith("agg:") -> "批量开播／下播通知"
     eventKey.startsWith("problem:") -> "系统问题通知"
     // 直播标题/分区变化通知（NotificationOutboxWriter.createForChange 生成
     // `change:TITLE:...` / `change:AREA:...`）。不补这两个分支就会一律显示成"通知"，
@@ -229,6 +229,12 @@ private fun deliveryReasonLabel(reason: String): String = when {
     reason == "PAYLOAD_INVALID" -> "通知内容无法解析"
     reason == "DELIVERY_UNKNOWN_ON_RECOVERY" -> "进程中断，投递结果未知"
     reason == "EXPIRED_BEFORE_DELIVERY" -> "未投递就过期"
+    reason == "NOTIFICATION_STALE" -> "超过提醒有效期，保留历史"
+    reason == "STATE_SUPERSEDED" -> "状态已变化，旧提醒已取消"
+    reason == "BATCH_NO_LONGER_RELEVANT" -> "本批提醒均已过期或状态已变化"
+    reason == "MONITORING_DISABLED" -> "监控已关闭"
+    reason == "WAITING_FOR_FRESH_OBSERVATION" -> "等待新检查结果后复核"
+    reason == "SUPPRESSED_QUIET_HOURS" -> "免打扰时段内不提醒"
     reason == "STREAMER_DELETED" -> "主播已删除，通知作废"
     reason == "DISPATCH_EXCEPTION" -> "投递时发生异常"
     else -> reason

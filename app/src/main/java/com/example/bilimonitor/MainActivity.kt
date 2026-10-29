@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var notificationRepository: com.example.bilimonitor.data.repository.NotificationRepository
     @Inject lateinit var notificationDispatcher: com.example.bilimonitor.background.NotificationDispatcher
     @Inject lateinit var clock: com.example.bilimonitor.core.AppClock
+    @Inject lateinit var notificationLogDao: com.example.bilimonitor.data.local.dao.LogDao
 
     private var pendingUrl: String? by mutableStateOf(null)
     private var startDestination: String? by mutableStateOf(null)
@@ -72,6 +73,37 @@ class MainActivity : ComponentActivity() {
      */
     private var handledEventKey: String? = null
     private var handledUrl: String? = null
+    private var pendingClickHint: String? = null
+    private var resolvingKey: String? = null
+    private var deepLinkJob: kotlinx.coroutines.Job? = null
+    private var navigationSequence = 0L
+
+    private fun resolvePendingNotification() {
+        val key = pendingEventKey ?: return
+        val hint = pendingClickHint
+        val sequence = ++navigationSequence
+        deepLinkJob?.cancel()
+        pendingTarget = null
+        resolvingKey = key
+        deepLinkJob = lifecycleScope.launch {
+            try {
+                val target = deepLinkResolver.resolve(key, hint)
+                if (sequence == navigationSequence) pendingTarget = target
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("NotificationNavigation", "通知目标解析失败", e)
+                runCatching {
+                    notificationLogDao.insertAppError(com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                        com.example.bilimonitor.core.Ids.newId(), null, clock.nowWall(),
+                        com.example.bilimonitor.data.local.AppError.NOTIFICATION_UNAVAILABLE,
+                        "通知目标解析失败：${e.message}".take(500)))
+                }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                if (sequence == navigationSequence) pendingTarget =
+                    com.example.bilimonitor.data.repository.NotificationDeepLinkResolver.Target.Unknown(key)
+            }
+        }
+    }
 
     /**
      * POST_NOTIFICATIONS 的授权结果。
@@ -86,7 +118,7 @@ class MainActivity : ComponentActivity() {
             if (!granted) return@registerForActivityResult
             lifecycleScope.launch {
                 runCatching {
-                    notificationRepository.reviveFailed(clock.nowWall())
+                    reviveNotificationCapabilities()
                     notificationDispatcher.dispatchDue()
                 }.onFailure {
                     android.util.Log.w("MainActivity", "通知能力恢复后的补投失败：${it.message}")
@@ -103,6 +135,13 @@ class MainActivity : ComponentActivity() {
         handledUrl = savedInstanceState?.getString(STATE_HANDLED_URL)
         // 启动 Intent 参与去重：重建时它是被系统原样重放的那一份
         handleIntent(intent, dedupeAgainstHandled = true)
+        savedInstanceState?.getString("pending_notification_key")?.let {
+            if (pendingEventKey == null) {
+                pendingEventKey = it
+                pendingClickHint = savedInstanceState.getString("pending_notification_hint")
+            }
+        }
+        resolvePendingNotification()
 
         lifecycleScope.launch {
             // 配置读取失败时**必须仍给出一个起始页**。
@@ -119,13 +158,6 @@ class MainActivity : ComponentActivity() {
                     Routes.HOME
                 }
             startDestination = dest
-            // 深链解析需要在组合前完成，避免首页闪一下再跳转
-            pendingEventKey?.let { key ->
-                pendingTarget = runCatching { deepLinkResolver.resolve(key) }.getOrNull()
-                // 解析完立刻作废：这个 key 只代表"那一次点击"。留着它，下一次 Activity
-                // 重建（旋转、进程恢复）就会被当成新的一次点击重新解析、重新导航。
-                pendingEventKey = null
-            }
             setContent {
                 // 外观自定义（用户要求）：主题色 + 背景图（含明暗/透明度）。
                 // 在 setContent 这一层读取，是因为主题与背景必须包住整个 NavHost —— 
@@ -214,6 +246,8 @@ class MainActivity : ComponentActivity() {
                                 // 它会在下一次重建时被重新解析并再导航一遍。
                                 pendingTarget = null
                                 pendingEventKey = null
+                                pendingClickHint = null
+                                resolvingKey = null
                             },
                             onRequestNotificationPermission = { requestNotificationPermission() },
                             appearanceSettings = appearanceRepository
@@ -230,24 +264,35 @@ class MainActivity : ComponentActivity() {
         // 系统重放启动 Intent，我们又会当成一次新的点击。
         outState.putString(STATE_HANDLED_EVENT_KEY, handledEventKey)
         outState.putString(STATE_HANDLED_URL, handledUrl)
+        outState.putString("pending_notification_key", resolvingKey ?: pendingEventKey)
+        outState.putString("pending_notification_hint", pendingClickHint)
+    }
+
+    private suspend fun reviveNotificationCapabilities() {
+        if (!com.example.bilimonitor.notify.NotificationPoster.hasPermission(this)) return
+        val available = com.example.bilimonitor.data.local.NotificationEventType.entries
+            .map { com.example.bilimonitor.notify.NotificationPoster.channelIdFor(it) }.distinct()
+            .filter { com.example.bilimonitor.notify.NotificationPoster.isChannelEnabled(this, it) }
+            .map { "CHANNEL_DISABLED:$it" }
+        notificationRepository.reviveCapabilityFailures(clock.nowWall(), available)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch {
+            try {
+                // Includes returning from the system channel settings while the process stays alive.
+                reviveNotificationCapabilities()
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { android.util.Log.e("NotificationRecovery", "通知能力复核失败", e) }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // ★ 先把 key 取出来：handleIntent 会把它从 Intent 里摘掉（一次性消费），取晚了这里就拿不到。
-        val key = intent.getStringExtra(EXTRA_EVENT_KEY)
-        // onNewIntent 只会因为"系统把一份新 Intent 送到已存在的实例上"发生（用户点通知、
-        // 通知上的动作按钮、兜底页转交），那就是一次真实的点击，不参与去重。
         handleIntent(intent, dedupeAgainstHandled = false)
-        // Activity 已在前台时也要能响应：直接解析并交给已组合的导航
-        if (key != null) {
-            lifecycleScope.launch {
-                pendingTarget = runCatching { deepLinkResolver.resolve(key) }.getOrNull()
-                // 已经解析过，别再留着让下一次重建重复处理
-                pendingEventKey = null
-            }
-        }
+        resolvePendingNotification()
     }
 
     /**
@@ -265,12 +310,16 @@ class MainActivity : ComponentActivity() {
         if (intent == null) return
         val key = intent.getStringExtra(EXTRA_EVENT_KEY)
         val url = intent.getStringExtra(EXTRA_URL)
+        val hint = intent.getStringExtra(com.example.bilimonitor.notify.NotificationClickHint.EXTRA)
+        intent.removeExtra(com.example.bilimonitor.notify.NotificationClickHint.EXTRA)
         intent.removeExtra(EXTRA_EVENT_KEY)
         intent.removeExtra(EXTRA_URL)
 
         if (key != null && !(dedupeAgainstHandled && key == handledEventKey)) {
             handledEventKey = key
             pendingEventKey = key
+            pendingClickHint = hint
+            com.example.bilimonitor.notify.NotificationInteractions.record(this, key)
         }
         if (url == null || (dedupeAgainstHandled && url == handledUrl)) return
         handledUrl = url

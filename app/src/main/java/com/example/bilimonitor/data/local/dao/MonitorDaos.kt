@@ -24,8 +24,13 @@ import com.example.bilimonitor.data.local.entity.StreamerEntity
 import com.example.bilimonitor.data.local.entity.StreamerPendingTransitionEntity
 import kotlinx.coroutines.flow.Flow
 
+data class StreamerHealthGroup(val confirmedLiveStatus: ConfirmedLiveStatus, val lastError: String?, val count: Int)
+
 @Dao
 interface StreamerDao {
+    @Query("SELECT confirmedLiveStatus, lastError, COUNT(*) AS count FROM streamer WHERE deletedAt IS NULL AND monitoringEnabled = 1 GROUP BY confirmedLiveStatus, lastError")
+    fun observeHealthGroups(): Flow<List<StreamerHealthGroup>>
+
     /**
      * 唯一允许写 Streamer 确认状态与观察结果的入口（0.6.15 / 0.6.35 CAS 模板）。
      * 影响行数 0 → 调用方返回 StaleOrFenced / StaleSequence，禁止放宽条件重试。
@@ -140,8 +145,14 @@ interface StreamerDao {
     @Query("SELECT * FROM streamer WHERE uid = :uid LIMIT 1")
     suspend fun findByUid(uid: Long): StreamerEntity?
 
+    @Query("SELECT * FROM streamer WHERE stableId = :stableId LIMIT 1")
+    suspend fun findByStableId(stableId: String): StreamerEntity?
+
     @Query("SELECT * FROM streamer WHERE deletedAt IS NULL AND monitoringEnabled = 1 ORDER BY isFavorite DESC, name")
     suspend fun listMonitorable(): List<StreamerEntity>
+
+    @Query("SELECT COUNT(*) FROM streamer WHERE deletedAt IS NULL AND monitoringEnabled = 1")
+    fun observeMonitoredCount(): Flow<Int>
 
     @Query("SELECT * FROM streamer WHERE deletedAt IS NULL ORDER BY isFavorite DESC, name")
     fun observeActive(): Flow<List<StreamerEntity>>
@@ -484,8 +495,36 @@ interface StreamerDao {
     suspend fun bumpSourceDataVersion(now: Long): Int
 }
 
+data class SessionSummaryRow(
+    val streamerId: Long, val sessionCount: Int, val totalSeconds: Long,
+    val latestSessionStartAt: Long?, val latestSessionEndAt: Long?, val lastClosedEndAt: Long?
+)
+
 @Dao
 interface LiveSessionDao {
+    @Query("""
+        SELECT s.streamerId,
+            SUM(CASE WHEN s.endTime IS NOT NULL THEN 1 ELSE 0 END) AS sessionCount,
+            SUM(CASE WHEN s.endTime IS NOT NULL THEN COALESCE(s.durationSeconds, 0) ELSE 0 END) AS totalSeconds,
+            MAX(COALESCE(s.startTime, s.createdAt)) AS latestSessionStartAt,
+            (SELECT last.endTime FROM live_session last WHERE last.streamerId = s.streamerId
+                ORDER BY COALESCE(last.startTime, last.createdAt) DESC, last.id DESC LIMIT 1) AS latestSessionEndAt,
+            MAX(s.endTime) AS lastClosedEndAt
+        FROM live_session s GROUP BY s.streamerId
+    """)
+    fun observeSummaries(): Flow<List<SessionSummaryRow>>
+
+    @Query("""
+        SELECT * FROM live_session s WHERE streamerId = :streamerId
+          AND COALESCE(startTime, createdAt) >= :from AND COALESCE(startTime, createdAt) < :to
+          AND (:query = '' OR instr(COALESCE(titleAtStart, ''), :query) > 0
+            OR instr(COALESCE(titleAtEnd, ''), :query) > 0
+            OR EXISTS(SELECT 1 FROM live_session_title t WHERE t.sessionStableId = s.stableId
+                AND instr(t.title, :query) > 0))
+        ORDER BY COALESCE(startTime, createdAt) DESC, id DESC LIMIT :limit
+    """)
+    fun observeFiltered(streamerId: Long, from: Long, to: Long, query: String, limit: Int): Flow<List<LiveSessionEntity>>
+
     /** 复用而非重复创建 ACTIVE OPEN Session（0.6.15）。 */
     /**
      * 本地**所有**未结束场次（不分主播、不分 lifecycleState）。
@@ -663,7 +702,7 @@ interface LiveSessionDao {
             endLocked = CASE WHEN :endTime IS NOT NULL THEN 1 ELSE endLocked END,
             durationLocked = CASE WHEN :durationSeconds IS NOT NULL THEN 1 ELSE durationLocked END,
             confirmedOfflineAt = COALESCE(:confirmedOfflineAt, confirmedOfflineAt),
-            note = COALESCE(:note, note),
+            note = CASE WHEN :noteChanged THEN :note ELSE note END,
             correctionVersion = correctionVersion + 1,
             updatedAt = :now
         WHERE id = :id AND correctionVersion = :expectedCorrectionVersion
@@ -674,7 +713,7 @@ interface LiveSessionDao {
         startSource: String?, endSource: String?, durationSource: String?,
         startConfidence: String?, endConfidence: String?, durationConfidence: String?,
         confirmedOfflineAt: Long?,
-        note: String?, expectedCorrectionVersion: Long, now: Long
+        note: String?, expectedCorrectionVersion: Long, now: Long, noteChanged: Boolean = note != null
     ): Int
 
     @Query("SELECT * FROM live_session WHERE stableId = :sessionStableId LIMIT 1")

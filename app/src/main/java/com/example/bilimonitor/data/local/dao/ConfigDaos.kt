@@ -196,13 +196,15 @@ interface RuntimeLockDao {
         UPDATE system_runtime_lock
         SET maintenanceMode = :mode, monitoringLeaseId = NULL,
             leaseUntilWall = NULL, leaseUntilElapsed = NULL, leaseBootId = NULL,
-            fencingToken = NULL, runtimeInstanceId = NULL, updatedAt = :now
+            fencingToken = :owner, runtimeInstanceId = NULL, updatedAt = :now
         WHERE singletonId = 1
           AND maintenanceMode = 'OFF'
-          AND (monitoringLeaseId IS NULL OR leaseUntilWall < :now)
+          AND (monitoringLeaseId IS NULL
+            OR (leaseBootId = :bootId AND leaseUntilElapsed IS NOT NULL AND leaseUntilElapsed < :elapsed)
+            OR ((leaseBootId IS NULL OR leaseBootId <> :bootId OR leaseUntilElapsed IS NULL) AND leaseUntilWall < :now))
         """
     )
-    suspend fun enterMaintenance(mode: MaintenanceMode, now: Long): Int
+    suspend fun enterMaintenance(mode: MaintenanceMode, now: Long, owner: String, elapsed: Long, bootId: String): Int
 
     /**
      * **用户主动发起**的维护接管：允许直接夺走仍在有效期内的监控租约。
@@ -223,13 +225,13 @@ interface RuntimeLockDao {
         UPDATE system_runtime_lock
         SET maintenanceMode = :mode, monitoringLeaseId = NULL,
             leaseUntilWall = NULL, leaseUntilElapsed = NULL, leaseBootId = NULL,
-            fencingToken = NULL, runtimeInstanceId = NULL,
+            fencingToken = :owner, runtimeInstanceId = NULL,
             monitorGeneration = monitorGeneration + 1, updatedAt = :now
         WHERE singletonId = 1
           AND maintenanceMode = 'OFF'
         """
     )
-    suspend fun enterMaintenanceForcing(mode: MaintenanceMode, now: Long): Int
+    suspend fun enterMaintenanceForcing(mode: MaintenanceMode, now: Long, owner: String): Int
 
     /**
      * 冷启动时清掉残留的维护模式。
@@ -242,8 +244,8 @@ interface RuntimeLockDao {
     @Query("UPDATE system_runtime_lock SET maintenanceMode = 'OFF', updatedAt = :now WHERE singletonId = 1 AND maintenanceMode <> 'OFF'")
     suspend fun resetStaleMaintenance(now: Long): Int
 
-    @Query("UPDATE system_runtime_lock SET maintenanceMode = 'OFF', updatedAt = :now WHERE singletonId = 1 AND maintenanceMode = :mode")
-    suspend fun exitMaintenance(mode: MaintenanceMode, now: Long): Int
+    @Query("UPDATE system_runtime_lock SET maintenanceMode = 'OFF', fencingToken = NULL, updatedAt = :now WHERE singletonId = 1 AND maintenanceMode = :mode AND fencingToken = :owner")
+    suspend fun exitMaintenance(mode: MaintenanceMode, now: Long, owner: String): Int
 
     @Query("UPDATE source_data_revision SET sourceDataVersion = sourceDataVersion + 1, updatedAt = :now WHERE singletonId = 1")
     suspend fun bumpSourceDataVersion(now: Long): Int
@@ -372,6 +374,15 @@ interface CrashRecordDao {
 
 @Dao
 interface LogDao {
+    /** Audit rows older than 90 days, or outside the newest 10,000; bounded batches. */
+    @Query("""
+        DELETE FROM audit_log WHERE auditId IN (
+            SELECT auditId FROM audit_log WHERE occurredAt < :before OR auditId NOT IN (
+                SELECT auditId FROM audit_log ORDER BY occurredAt DESC, auditId DESC LIMIT :retainNewest)
+            ORDER BY occurredAt ASC, auditId ASC LIMIT :limit)
+    """)
+    suspend fun cleanupAudit(before: Long, retainNewest: Int, limit: Int): Int
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAudit(row: AuditLogEntity)
 

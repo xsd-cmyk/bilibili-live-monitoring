@@ -18,6 +18,22 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface NotificationOutboxDao {
+    @Query("""
+        UPDATE notification_outbox SET status = 'SENT', sentAt = COALESCE(sentAt, :now),
+            nextAttemptAt = NULL, lastError = NULL
+        WHERE eventKey = :key AND status IN ('PENDING','RETRY_WAIT','FAILED')
+    """)
+    suspend fun acknowledgeInteraction(key: String, now: Long): Int
+
+    @Query("""
+        UPDATE notification_outbox SET status = 'RETRY_WAIT', nextAttemptAt = (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END)
+        WHERE outboxId IN (SELECT outboxId FROM notification_outbox
+            WHERE status = 'FAILED' AND expiresAt > (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END)
+            AND (lastError = 'PERMISSION_DENIED' OR lastError IN (:availableChannels))
+            ORDER BY createdAt DESC LIMIT :limit)
+    """)
+    suspend fun reviveCapabilityFailures(now: Long, availableChannels: List<String>, limit: Int, elapsed: Long = 0L, bootId: String = ""): Int
+
     /**
      * 唯一允许的 Outbox Claim（0.6.15）：只有 PENDING/RETRY_WAIT 且到达 nextAttemptAt 的行可被认领，
      * 原子抢占，不允许先读后写。
@@ -36,8 +52,8 @@ interface NotificationOutboxDao {
             deliveryAttemptId = :deliveryAttemptId, attemptCount = attemptCount + 1
         WHERE outboxId = :outboxId
           AND status IN ('PENDING','RETRY_WAIT')
-          AND (nextAttemptAt IS NULL OR nextAttemptAt <= :now)
-          AND expiresAt > :now
+          AND (nextAttemptAt IS NULL OR nextAttemptAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + (:leaseUntilElapsed - (:leaseUntilWall - :now)) - timelineElapsed ELSE :now END))
+          AND expiresAt > (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + (:leaseUntilElapsed - (:leaseUntilWall - :now)) - timelineElapsed ELSE :now END)
         """
     )
     suspend fun claimOutbox(
@@ -73,12 +89,43 @@ interface NotificationOutboxDao {
     @Query(
         """
         SELECT * FROM notification_outbox
-        WHERE status IN ('PENDING','RETRY_WAIT') AND (nextAttemptAt IS NULL OR nextAttemptAt <= :now)
-          AND expiresAt > :now
+        WHERE status IN ('PENDING','RETRY_WAIT') AND (nextAttemptAt IS NULL OR nextAttemptAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END))
+          AND expiresAt > (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END)
         ORDER BY createdAt ASC LIMIT :limit
         """
     )
-    suspend fun findDue(now: Long, limit: Int): List<NotificationOutboxEntity>
+    suspend fun findDue(now: Long, limit: Int, elapsed: Long = 0L, bootId: String = ""): List<NotificationOutboxEntity>
+
+    @Query("SELECT COUNT(*) FROM notification_outbox WHERE status IN ('PENDING','RETRY_WAIT','PROCESSING')")
+    fun observeDeliveryChanges(): Flow<Int>
+
+    @Query("""
+        SELECT MIN(CASE WHEN status = 'PROCESSING' THEN
+            CASE WHEN leaseBootId = :bootId AND leaseUntilElapsed IS NOT NULL
+                THEN leaseUntilElapsed - :elapsed ELSE COALESCE(leaseUntilWall, :now) - :now END
+            ELSE MIN(COALESCE(nextAttemptAt, createdAt) - (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END), expiresAt - (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END)) END)
+        FROM notification_outbox WHERE status IN ('PENDING','RETRY_WAIT','PROCESSING')
+    """)
+    suspend fun nextDeliveryDelay(now: Long, elapsed: Long, bootId: String): Long?
+
+    @Query("""
+        UPDATE notification_outbox SET status = :status, lastError = :reason, nextAttemptAt = NULL
+        WHERE outboxId = :id AND status IN ('PENDING','RETRY_WAIT')
+    """)
+    suspend fun settleQueued(id: String, status: NotificationOutboxStatus, reason: String): Int
+
+    @Query("""
+        UPDATE notification_outbox SET status = 'RETRY_WAIT', nextAttemptAt = :retryAt,
+            lastError = :reason
+        WHERE outboxId = :id AND status IN ('PENDING','RETRY_WAIT')
+    """)
+    suspend fun awaitObservation(id: String, retryAt: Long, reason: String = "WAITING_FOR_FRESH_OBSERVATION"): Int
+
+    @Query("""
+        UPDATE notification_outbox SET payloadJson = :payload, expiresAt = :expiresAt
+        WHERE outboxId = :id AND status = 'PROCESSING' AND deliveryAttemptId = :attempt
+    """)
+    suspend fun prepareClaimed(id: String, attempt: String, payload: String, expiresAt: Long): Int
 
     /** 结果回写：必须带 status CAS，防止已 SENT 的行被旧 worker 覆盖。 */
     @Query(
@@ -159,8 +206,8 @@ interface NotificationOutboxDao {
     @Query(
         """
         UPDATE notification_outbox
-        SET status = CASE WHEN expiresAt <= :now THEN 'EXPIRED' ELSE 'RETRY_WAIT' END,
-            nextAttemptAt = CASE WHEN expiresAt <= :now THEN NULL ELSE :now END,
+        SET status = CASE WHEN expiresAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) THEN 'EXPIRED' ELSE 'RETRY_WAIT' END,
+            nextAttemptAt = CASE WHEN expiresAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) THEN NULL ELSE (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) END,
             lastError = 'DELIVERY_UNKNOWN_ON_RECOVERY',
             leaseUntilWall = NULL,
             leaseUntilElapsed = NULL,
@@ -186,15 +233,15 @@ interface NotificationOutboxDao {
     @Query(
         """
         UPDATE notification_outbox
-        SET status = CASE WHEN expiresAt <= :now THEN 'EXPIRED' ELSE 'RETRY_WAIT' END,
-            nextAttemptAt = CASE WHEN expiresAt <= :now THEN NULL ELSE :now END,
+        SET status = CASE WHEN expiresAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) THEN 'EXPIRED' ELSE 'RETRY_WAIT' END,
+            nextAttemptAt = CASE WHEN expiresAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) THEN NULL ELSE (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) END,
             lastError = 'ORPHAN_DELIVERY_UNKNOWN_RECOVERED',
             leaseUntilWall = NULL, leaseUntilElapsed = NULL,
             workerInstanceId = NULL, deliveryAttemptId = NULL
         WHERE status = 'DELIVERY_UNKNOWN'
         """
     )
-    suspend fun recoverOrphanDeliveryUnknown(now: Long): Int
+    suspend fun recoverOrphanDeliveryUnknown(now: Long, elapsed: Long = 0L, bootId: String = ""): Int
 
     /**
      * 把**从未被认领**就已超期的行直接结算为 EXPIRED。
@@ -209,10 +256,10 @@ interface NotificationOutboxDao {
         SET status = 'EXPIRED', nextAttemptAt = NULL, lastError = 'EXPIRED_BEFORE_DELIVERY',
             leaseUntilWall = NULL, leaseUntilElapsed = NULL,
             workerInstanceId = NULL, deliveryAttemptId = NULL
-        WHERE status IN ('PENDING','RETRY_WAIT') AND expiresAt <= :now
+        WHERE status IN ('PENDING','RETRY_WAIT') AND expiresAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END)
         """
     )
-    suspend fun expireOverduePending(now: Long): Int
+    suspend fun expireOverduePending(now: Long, elapsed: Long = 0L, bootId: String = ""): Int
 
     /**
      * 投递过程中抛异常时把该行**显式放回队列**（而不是留在 PROCESSING 等租约过期）。
@@ -229,12 +276,12 @@ interface NotificationOutboxDao {
         """
         UPDATE notification_outbox
         SET status = CASE
-                WHEN expiresAt <= :now THEN 'EXPIRED'
+                WHEN expiresAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) THEN 'EXPIRED'
                 WHEN attemptCount >= :maxAttempts THEN 'FAILED'
                 ELSE 'RETRY_WAIT' END,
             nextAttemptAt = CASE
-                WHEN expiresAt <= :now OR attemptCount >= :maxAttempts THEN NULL
-                ELSE :retryAt END,
+                WHEN expiresAt <= (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) OR attemptCount >= :maxAttempts THEN NULL
+                ELSE (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END) + (:retryAt - :now) END,
             lastError = :lastError,
             leaseUntilWall = NULL, leaseUntilElapsed = NULL,
             workerInstanceId = NULL, deliveryAttemptId = NULL
@@ -246,7 +293,8 @@ interface NotificationOutboxDao {
         now: Long,
         retryAt: Long,
         lastError: String,
-        maxAttempts: Int
+        maxAttempts: Int,
+        elapsed: Long = 0L, bootId: String = ""
     ): Int
 
     /**
@@ -301,15 +349,15 @@ interface NotificationOutboxDao {
     @Query(
         """
         UPDATE notification_outbox
-        SET status = 'RETRY_WAIT', nextAttemptAt = :now, lastError = NULL
+        SET status = 'RETRY_WAIT', nextAttemptAt = (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END), lastError = NULL
         WHERE outboxId IN (
             SELECT outboxId FROM notification_outbox
-            WHERE status = 'FAILED' AND expiresAt > :now
+            WHERE status = 'FAILED' AND expiresAt > (CASE WHEN timelineBootId = :bootId AND timelineElapsed IS NOT NULL AND timelineWall IS NOT NULL THEN timelineWall + :elapsed - timelineElapsed ELSE :now END)
             LIMIT :limit
         )
         """
     )
-    suspend fun reviveFailed(now: Long, limit: Int): Int
+    suspend fun reviveFailed(now: Long, limit: Int, elapsed: Long = 0L, bootId: String = ""): Int
 
     /** 软删除主播：其未投递行置 CANCELLED（0.6.22.1）。 */
     @Query(
@@ -436,6 +484,16 @@ interface NotificationIdRegistryDao {
 
 @Dao
 interface NotificationAggregateDao {
+    @Query("SELECT COUNT(*) FROM notification_aggregate WHERE status IN ('COLLECTING','READY')")
+    fun observeWindowChanges(): Flow<Int>
+
+    @Query("""
+        UPDATE notification_aggregate_event SET active = 0, aggregateId = NULL,
+            bindingStatus = 'RELEASED', releasedAt = :now
+        WHERE aggregateId = :aggregateId AND active = 1 AND eventId NOT IN (:eventIds)
+    """)
+    suspend fun retainActiveEvents(aggregateId: String, eventIds: List<String>, now: Long): Int
+
     @Query("SELECT * FROM notification_aggregate WHERE bootId = :bootId AND aggregateKind = :kind AND status IN ('COLLECTING','READY') LIMIT 1")
     suspend fun findInProgress(bootId: String, kind: NotificationAggregateKind): NotificationAggregateEntity?
 
@@ -539,11 +597,12 @@ interface NotificationAggregateDao {
             SELECT 1 FROM notification_outbox o
             WHERE o.aggregateId = notification_aggregate.aggregateId
               AND o.status IN ('FAILED','EXPIRED','CANCELLED')
-              AND o.expiresAt <= :now
+              AND o.expiresAt <= (CASE WHEN o.timelineBootId = :bootId AND o.timelineElapsed IS NOT NULL
+                AND o.timelineWall IS NOT NULL THEN o.timelineWall + :elapsed - o.timelineElapsed ELSE :now END)
         )
         """
     )
-    suspend fun settleStuckFrozen(now: Long): Int
+    suspend fun settleStuckFrozen(now: Long, elapsed: Long = 0L, bootId: String = ""): Int
 
     /** 聚合是否仍被任何 Outbox 引用（含未到期的非终态行）。 */
     @Query("SELECT EXISTS(SELECT 1 FROM notification_outbox WHERE aggregateId = :aggregateId)")
@@ -558,6 +617,12 @@ interface NotificationAggregateDao {
 
 @Dao
 interface NotificationHistoryDao {
+    @Query("""
+        UPDATE notification_history SET reason = :reason, deliveredAt = COALESCE(deliveredAt, :now), updatedAt = :now
+        WHERE eventKey = :key
+    """)
+    suspend fun recordInteraction(key: String, reason: String, now: Long): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(row: NotificationHistoryEntity)
 

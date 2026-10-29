@@ -37,7 +37,10 @@ data class LiveNotificationPayload(
      * 变化类通知（标题/分区）的**变化前**取值，用于渲染成"旧 → 新"。
      * 带默认值：旧的通知 payload 里没有这个键，反序列化仍然正常。
      */
-    val previousValue: String? = null
+    val previousValue: String? = null,
+    val confirmedAt: Long? = null,
+    val confirmedElapsed: Long? = null,
+    val confirmedBootId: String? = null
 )
 
 @Serializable
@@ -399,7 +402,10 @@ object NotificationOutboxWriter {
                 roomTitle = streamer.roomTitle,
                 areaName = streamer.areaName,
                 url = streamer.liveUrl,
-                coverUrl = streamer.coverUrl
+                coverUrl = streamer.coverUrl,
+                confirmedAt = event.eventConfirmedAt,
+                confirmedElapsed = (clock.nowElapsed() - (now - event.eventConfirmedAt).coerceAtLeast(0L)).takeIf { it >= 0 },
+                confirmedBootId = clock.bootId().takeIf { (now - event.eventConfirmedAt).coerceAtLeast(0L) <= clock.nowElapsed() }
             )
         }
         val isEnd = aggregate.aggregateKind == NotificationAggregateKind.END
@@ -441,7 +447,10 @@ object NotificationOutboxWriter {
                 deliveryAttemptId = null,
                 sentAt = null,
                 lastError = null,
-                configVersion = configVersion
+                configVersion = configVersion,
+                timelineWall = now,
+                timelineElapsed = clock.nowElapsed(),
+                timelineBootId = clock.bootId()
             )
         )
     }
@@ -520,6 +529,14 @@ object NotificationOutboxWriter {
         val eventKey = Ids.eventKeyForEvent(event.eventId)
         val notificationId = getOrCreateNotificationId(db, eventKey, now)
             .getOrNull() ?: return
+        val originalPayload = NotificationPayloads.decodeLive(payloadJson)
+        val stampedPayload = originalPayload?.copy(
+            confirmedAt = originalPayload.confirmedAt ?: event.eventConfirmedAt,
+            confirmedElapsed = originalPayload.confirmedElapsed ?:
+                (clock.nowElapsed() - (now - event.eventConfirmedAt).coerceAtLeast(0L)).takeIf { it >= 0 },
+            confirmedBootId = originalPayload.confirmedBootId ?:
+                clock.bootId().takeIf { (now - event.eventConfirmedAt).coerceAtLeast(0L) <= clock.nowElapsed() }
+        )?.let { NotificationPayloads.json.encodeToString(LiveNotificationPayload.serializer(), it) } ?: payloadJson
         outboxDao.insert(
             NotificationOutboxEntity(
                 outboxId = Ids.newId(),
@@ -530,7 +547,7 @@ object NotificationOutboxWriter {
                 problemKey = null,
                 notificationId = notificationId,
                 eventType = eventType,
-                payloadJson = payloadJson,
+                payloadJson = stampedPayload,
                 status = NotificationOutboxStatus.PENDING,
                 nextAttemptAt = now,
                 attemptCount = 0,
@@ -544,7 +561,10 @@ object NotificationOutboxWriter {
                 deliveryAttemptId = null,
                 sentAt = null,
                 lastError = null,
-                configVersion = configVersion
+                configVersion = configVersion,
+                timelineWall = now,
+                timelineElapsed = clock.nowElapsed(),
+                timelineBootId = clock.bootId()
             )
         )
     }
@@ -574,7 +594,8 @@ object NotificationOutboxWriter {
         changeKey: String,
         payloadJson: String,
         now: Long,
-        configVersion: Long
+        configVersion: Long,
+        clock: AppClock? = null
     ) {
         val eventKey = changeEventKey(eventType, streamerStableId, sessionStableId, changeKey)
         val outboxDao = db.notificationOutboxDao()
@@ -605,7 +626,10 @@ object NotificationOutboxWriter {
                 deliveryAttemptId = null,
                 sentAt = null,
                 lastError = null,
-                configVersion = configVersion
+                configVersion = configVersion,
+                timelineWall = now,
+                timelineElapsed = clock?.nowElapsed(),
+                timelineBootId = clock?.bootId()
             )
         )
     }
@@ -661,7 +685,10 @@ object NotificationOutboxWriter {
                 deliveryAttemptId = null,
                 sentAt = null,
                 lastError = null,
-                configVersion = configVersion
+                configVersion = configVersion,
+                timelineWall = now,
+                timelineElapsed = clock.nowElapsed(),
+                timelineBootId = clock.bootId()
             )
         )
     }

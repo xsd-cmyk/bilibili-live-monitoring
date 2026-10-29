@@ -71,247 +71,238 @@ class ExportRepository @Inject constructor(
      * @param streamerIds 主播 id 集合（调用方保证非空）
      * @param rangeLabel 时间范围的可读描述，写进报告抬头
      */
-    /**
-     * 本次**历史导出**是否已经建出快照行（只给取消日志区分"取消在哪个阶段"用）。
-     *
-     * 为什么是字段而不是局部变量（复查发现的缺陷）：`onFailure` 的 lambda 挂在 runCatching
-     * 的**结果**上，在 runCatching 的 lambda **之外**求值 —— 它看不到其体内的局部变量，
-     * 局部写法的直接后果就是编译不过（Unresolved reference 'snapshotCreated'）。
-     * 与 [com.example.bilimonitor.data.repository.BackupRepository] 里的降级计数同一个处理。
-     * 导出互斥由维护权（takeOverForMaintenance）保证，同一时刻只有一次导出，故无并发写；
-     * 每次 [exportHistory] 开头都会先清零。
-     */
-    private var historySnapshotCreated = false
-
     suspend fun exportHistory(
         streamerIds: List<Long>,
         from: Long,
         to: Long,
         rangeLabel: String
-    ): Result<ExportResult> = runCatching {
-        require(streamerIds.isNotEmpty()) { "没有选择主播" }
-        val snapshotId = Ids.newId()
-        val now = clock.nowWall()
-        // 主播名一律从库里取（而不是由界面传进来）：名字可能已被改过，
-        // 而且**没记录的主播也要出现在报告里**，快照表里没有它们的行。
-        val streamers = db.streamerDao().listAllIncludingDeleted()
-        val namesById = streamers.associate { it.id to it.name }
-        // uid 只用于"同名主播"的显示区分（见 sectionTitlesOf），不参与任何统计口径
-        val uidsById = streamers.associate { it.id to it.uid }
-        val selectedNames = streamerIds.map { namesById[it] ?: "未知主播（$it）" }
-        // 报告的分组与计数一律按 **id**，名字只在最终显示时映射：B 站昵称可以重名
-        // （streamer.name 没有唯一索引），按名字分组会让两位同名主播的每一节都列出两人的
-        // 全部场次、时长翻倍，而抬头"场次 N"又是对的 —— 同一份文件自相矛盾。
-        val sectionTitles = sectionTitlesOf(streamerIds, selectedNames, uidsById)
+    ): Result<ExportResult> {
+        var historySnapshotCreated = false
+        return runCatching {
+            require(streamerIds.isNotEmpty()) { "没有选择主播" }
+            val snapshotId = Ids.newId()
+            val now = clock.nowWall()
+            // 主播名一律从库里取（而不是由界面传进来）：名字可能已被改过，
+            // 而且**没记录的主播也要出现在报告里**，快照表里没有它们的行。
+            val streamers = db.streamerDao().listAllIncludingDeleted()
+            val namesById = streamers.associate { it.id to it.name }
+            // uid 只用于"同名主播"的显示区分（见 sectionTitlesOf），不参与任何统计口径
+            val uidsById = streamers.associate { it.id to it.uid }
+            val selectedNames = streamerIds.map { namesById[it] ?: "未知主播（$it）" }
+            // 报告的分组与计数一律按 **id**，名字只在最终显示时映射：B 站昵称可以重名
+            // （streamer.name 没有唯一索引），按名字分组会让两位同名主播的每一节都列出两人的
+            // 全部场次、时长翻倍，而抬头"场次 N"又是对的 —— 同一份文件自相矛盾。
+            val sectionTitles = sectionTitlesOf(streamerIds, selectedNames, uidsById)
 
-        // 1-2. 进入维护模式 + 建快照记录（导出互斥由维护权保证，0.6.33.2 #5）
-        // 用"用户主动接管"版本：否则监控租约有效期内（每 Tick 后 90 秒）导出必然失败，
-        // 而报错信息会说是"导出/恢复/清理正在进行"——与真实原因完全无关。
-        var sessionCount = 0
-        historySnapshotCreated = false
-        try {
-            // ★ 取维护权必须放在 try **里面**（复查发现的缺陷）：它是 suspend 的 Room 写，
-            //   协程已被取消时可能在 withContext 边界抛 CancellationException，而那一刻
-            //   UPDATE 可能**已经提交**。放在 try 之外时 finally 不会执行 ⇒ maintenanceMode
-            //   停在 'BACKUP'，而引擎取租约要求 'OFF' ⇒ **监控停摆到下次冷启动**。
-            //   （与 applyRestore 的同型修复同一个道理；导出两条路径都要。）
-            check(runtimeLockRepository.takeOverForMaintenance(MaintenanceMode.BACKUP)) {
-                "无法取得维护权（导出/恢复/清理正在进行），请稍后再试"
-            }
-            val exportDao = db.exportDao()
-            exportDao.insertSnapshot(
-                ExportSnapshotEntity(
-                    snapshotId = snapshotId, exportType = ExportType.HTML,
-                    sourceDataVersion = db.configDao().getSourceDataVersion() ?: 0L,
-                    createdAt = now, expiresAt = now + 24 * 60 * 60 * 1000,
-                    status = ExportSnapshotStatus.BUILDING
-                )
-            )
-
-            // 3-4. 单事务复制到临时快照表 + 置 READY
-            db.withTransaction {
-                // 时间判定与历史页筛选口径一致：用开播时间（缺失时退回创建时间）
-                val sessions = db.liveSessionDao()
-                    .listClosedForStreamersBetween(streamerIds, from, to)
-                sessionCount = sessions.size
-                val names = namesById
-                // 分区：一场直播可能换过多个，导出时按观察顺序拼成 "A → B"
-                val areasBySession = db.liveSessionAreaDao().listAll()
-                    .groupBy { it.sessionStableId }
-                    .mapValues { (_, list) ->
-                        list.sortedBy { it.observedAt }.map { it.areaLabel }.distinct().joinToString(" → ")
-                    }
-                for (s in sessions) {
-                    val row = mapOf(
-                        "stableId" to s.stableId,
-                        // ★ 同时写 id 与显示名：分组/计数按 id（昵称可重名），只有显示时才用名字
-                        "streamerId" to s.streamerId.toString(),
-                        "streamer" to (names[s.streamerId] ?: "未知"),
-                        "startTime" to s.startTime,
-                        "endTime" to s.endTime,
-                        "durationSeconds" to s.durationSeconds,
-                        "startConfidence" to s.startConfidence?.name,
-                        "endConfidence" to s.endConfidence?.name,
-                        "titleAtStart" to s.titleAtStart,
-                        // 没有分区记录的老场次回退到 session 上的起止分区
-                        "areas" to (areasBySession[s.stableId]
-                            ?: listOfNotNull(s.areaAtStart, s.areaAtEnd).distinct().joinToString(" → ")),
-                        "note" to s.note
+            // 1-2. 进入维护模式 + 建快照记录（导出互斥由维护权保证，0.6.33.2 #5）
+            // 用"用户主动接管"版本：否则监控租约有效期内（每 Tick 后 90 秒）导出必然失败，
+            // 而报错信息会说是"导出/恢复/清理正在进行"——与真实原因完全无关。
+            var sessionCount = 0
+            val maintenance = RuntimeLockRepository.MaintenanceLease(MaintenanceMode.BACKUP)
+            try {
+                // ★ 取维护权必须放在 try **里面**（复查发现的缺陷）：它是 suspend 的 Room 写，
+                //   协程已被取消时可能在 withContext 边界抛 CancellationException，而那一刻
+                //   UPDATE 可能**已经提交**。放在 try 之外时 finally 不会执行 ⇒ maintenanceMode
+                //   停在 'BACKUP'，而引擎取租约要求 'OFF' ⇒ **监控停摆到下次冷启动**。
+                //   （与 applyRestore 的同型修复同一个道理；导出两条路径都要。）
+                check(runtimeLockRepository.takeOverForMaintenance(maintenance)) {
+                    "无法取得维护权（导出/恢复/清理正在进行），请稍后再试"
+                }
+                val exportDao = db.exportDao()
+                exportDao.insertSnapshot(
+                    ExportSnapshotEntity(
+                        snapshotId = snapshotId, exportType = ExportType.HTML,
+                        sourceDataVersion = db.configDao().getSourceDataVersion() ?: 0L,
+                        createdAt = now, expiresAt = now + 24 * 60 * 60 * 1000,
+                        status = ExportSnapshotStatus.BUILDING
                     )
-                    exportDao.insertSessionRow(
-                        ExportSnapshotLiveSessionEntity(
-                            snapshotId = snapshotId,
-                            sessionStableId = s.stableId,
-                            rowJson = json.encodeToString(
-                                kotlinx.serialization.serializer<Map<String, String?>>(),
-                                row.mapValues { it.value?.toString() }
+                )
+
+                // 3-4. 单事务复制到临时快照表 + 置 READY
+                db.withTransaction {
+                    // 时间判定与历史页筛选口径一致：用开播时间（缺失时退回创建时间）
+                    val sessions = db.liveSessionDao()
+                        .listClosedForStreamersBetween(streamerIds, from, to)
+                    sessionCount = sessions.size
+                    val names = namesById
+                    // 分区：一场直播可能换过多个，导出时按观察顺序拼成 "A → B"
+                    val areasBySession = db.liveSessionAreaDao().listAll()
+                        .groupBy { it.sessionStableId }
+                        .mapValues { (_, list) ->
+                            list.sortedBy { it.observedAt }.map { it.areaLabel }.distinct().joinToString(" → ")
+                        }
+                    for (s in sessions) {
+                        val row = mapOf(
+                            "stableId" to s.stableId,
+                            // ★ 同时写 id 与显示名：分组/计数按 id（昵称可重名），只有显示时才用名字
+                            "streamerId" to s.streamerId.toString(),
+                            "streamer" to (names[s.streamerId] ?: "未知"),
+                            "startTime" to s.startTime,
+                            "endTime" to s.endTime,
+                            "durationSeconds" to s.durationSeconds,
+                            "startConfidence" to s.startConfidence?.name,
+                            "endConfidence" to s.endConfidence?.name,
+                            "titleAtStart" to s.titleAtStart,
+                            // 没有分区记录的老场次回退到 session 上的起止分区
+                            "areas" to (areasBySession[s.stableId]
+                                ?: listOfNotNull(s.areaAtStart, s.areaAtEnd).distinct().joinToString(" → ")),
+                            "note" to s.note
+                        )
+                        exportDao.insertSessionRow(
+                            ExportSnapshotLiveSessionEntity(
+                                snapshotId = snapshotId,
+                                sessionStableId = s.stableId,
+                                rowJson = json.encodeToString(
+                                    kotlinx.serialization.serializer<Map<String, String?>>(),
+                                    row.mapValues { it.value?.toString() }
+                                )
                             )
                         )
+                    }
+                    exportDao.casStatus(snapshotId, ExportSnapshotStatus.BUILDING, ExportSnapshotStatus.READY)
+                    // 记下"快照真的建出来了"：取消日志不能断言一个不存在的快照（见 onFailure）。
+                    historySnapshotCreated = true
+                }
+
+                // 5. 快照已 READY，后续读取走临时表、不再触碰业务表。
+            } catch (e: Throwable) {
+                // 构建阶段失败/被取消：快照会永远留在 BUILDING（findUnfinished() 会一直看得见它，
+                // 而 deleteExpired 只清已到期的行）。终态必须现在写，且必须在 NonCancellable 里
+                // （见 markSnapshotTerminal）—— 协程被取消后再做挂起写根本不会落库。
+                markSnapshotTerminal(snapshotId, terminalStatusFor(e))
+                throw e
+            } finally {
+                // ★ 释放维护权是 suspend 的 Room 写：协程被取消后这句话不会执行，
+                //   maintenanceMode 就永久停在 'BACKUP'；而取租约（acquireOrTakeoverLease）
+                //   与再次进入维护都要求 'OFF'，于是**监控拿不到租约、彻底停摆**，
+                //   只有下次冷启动的 resetStaleMaintenance 能自救（ConfigDaos 的注释写明了这个后果）。
+                exitMaintenanceSafely(maintenance)
+            }
+
+            // 6-7. 读取临时快照并写出。
+            // 状态机必须闭环：无论中途哪一步失败，都不能把快照永久留在 CONSUMING
+            // （原实现只置 CONSUMING 而失败时无人回收，`deleteExpired` 只处理已到期的行，
+            //   而本流程创建的快照 expiresAt = 创建+24h —— 期间诊断包会持续暴露不一致）。
+            val exportDao = db.exportDao()
+            try {
+                // 状态迁移必须检查 CAS 结果：原实现全部丢弃返回值，迁移失败仍继续并报告成功。
+                check(
+                    exportDao.casStatus(snapshotId, ExportSnapshotStatus.READY, ExportSnapshotStatus.CONSUMING) > 0
+                ) { "导出状态异常：快照未处于 READY，可能已被清理或并发消费" }
+                val rows = exportDao.listSessionRows(snapshotId)
+                // ★ 行解码失败原先被静默丢弃（mapNotNull { runCatching { … }.getOrNull() }）：
+                //   统计丢了几行用户完全看不出来，却依旧报告"导出成功"。这里数出来，
+                //   一条写进 application_error_log、一条如实标在报告抬头。
+                val decoded = ArrayList<Map<String, String?>>(rows.size)
+                var unparsableRows = 0
+                for (row in rows) {
+                    val parsed = runCatching {
+                        json.decodeFromString(kotlinx.serialization.serializer<Map<String, String?>>(), row.rowJson)
+                    }.getOrNull()
+                    if (parsed == null) unparsableRows++ else decoded.add(parsed)
+                }
+                // 全部行都解析失败 = 报告里不会有任何内容，绝不能生成一份空报告还说成功
+                check(decoded.isNotEmpty() || rows.isEmpty()) {
+                    "快照里 ${rows.size} 行数据全部无法解析，未生成文件"
+                }
+                // 进行中的场次不在取数结果里（查询带 endTime IS NOT NULL）：先数一次，
+                // 才能把"确实没有记录"与"只有一场还没结束"分开说，而不是一律断言"没有直播记录"。
+                val inProgressCount = countInProgress(streamerIds, from, to)
+                check(decoded.isNotEmpty()) {
+                    "所选主播在该范围内暂无已结束的直播记录${inProgressHint(inProgressCount)}，未生成文件"
+                }
+                if (unparsableRows > 0) {
+                    logExportFailure(
+                        "直播历史导出：${unparsableRows} 行快照数据无法解析，已从报告中跳过（共 ${rows.size} 行）"
                     )
                 }
-                exportDao.casStatus(snapshotId, ExportSnapshotStatus.BUILDING, ExportSnapshotStatus.READY)
-                // 记下"快照真的建出来了"：取消日志不能断言一个不存在的快照（见 onFailure）。
-                historySnapshotCreated = true
-            }
 
-            // 5. 快照已 READY，后续读取走临时表、不再触碰业务表。
-        } catch (e: Throwable) {
-            // 构建阶段失败/被取消：快照会永远留在 BUILDING（findUnfinished() 会一直看得见它，
-            // 而 deleteExpired 只清已到期的行）。终态必须现在写，且必须在 NonCancellable 里
-            // （见 markSnapshotTerminal）—— 协程被取消后再做挂起写根本不会落库。
-            markSnapshotTerminal(snapshotId, terminalStatusFor(e))
-            throw e
-        } finally {
-            // ★ 释放维护权是 suspend 的 Room 写：协程被取消后这句话不会执行，
-            //   maintenanceMode 就永久停在 'BACKUP'；而取租约（acquireOrTakeoverLease）
-            //   与再次进入维护都要求 'OFF'，于是**监控拿不到租约、彻底停摆**，
-            //   只有下次冷启动的 resetStaleMaintenance 能自救（ConfigDaos 的注释写明了这个后果）。
-            exitMaintenanceSafely()
-        }
-
-        // 6-7. 读取临时快照并写出。
-        // 状态机必须闭环：无论中途哪一步失败，都不能把快照永久留在 CONSUMING
-        // （原实现只置 CONSUMING 而失败时无人回收，`deleteExpired` 只处理已到期的行，
-        //   而本流程创建的快照 expiresAt = 创建+24h —— 期间诊断包会持续暴露不一致）。
-        val exportDao = db.exportDao()
-        try {
-            // 状态迁移必须检查 CAS 结果：原实现全部丢弃返回值，迁移失败仍继续并报告成功。
-            check(
-                exportDao.casStatus(snapshotId, ExportSnapshotStatus.READY, ExportSnapshotStatus.CONSUMING) > 0
-            ) { "导出状态异常：快照未处于 READY，可能已被清理或并发消费" }
-            val rows = exportDao.listSessionRows(snapshotId)
-            // ★ 行解码失败原先被静默丢弃（mapNotNull { runCatching { … }.getOrNull() }）：
-            //   统计丢了几行用户完全看不出来，却依旧报告"导出成功"。这里数出来，
-            //   一条写进 application_error_log、一条如实标在报告抬头。
-            val decoded = ArrayList<Map<String, String?>>(rows.size)
-            var unparsableRows = 0
-            for (row in rows) {
-                val parsed = runCatching {
-                    json.decodeFromString(kotlinx.serialization.serializer<Map<String, String?>>(), row.rowJson)
-                }.getOrNull()
-                if (parsed == null) unparsableRows++ else decoded.add(parsed)
-            }
-            // 全部行都解析失败 = 报告里不会有任何内容，绝不能生成一份空报告还说成功
-            check(decoded.isNotEmpty() || rows.isEmpty()) {
-                "快照里 ${rows.size} 行数据全部无法解析，未生成文件"
-            }
-            // 进行中的场次不在取数结果里（查询带 endTime IS NOT NULL）：先数一次，
-            // 才能把"确实没有记录"与"只有一场还没结束"分开说，而不是一律断言"没有直播记录"。
-            val inProgressCount = countInProgress(streamerIds, from, to)
-            check(decoded.isNotEmpty()) {
-                "所选主播在该范围内暂无已结束的直播记录${inProgressHint(inProgressCount)}，未生成文件"
-            }
-            if (unparsableRows > 0) {
-                logExportFailure(
-                    "直播历史导出：${unparsableRows} 行快照数据无法解析，已从报告中跳过（共 ${rows.size} 行）"
-                )
-            }
-
-            val withRecordIds = decoded.mapNotNull { it["streamerId"]?.toLongOrNull() }.toSet()
-            val emptyStreamerCount = streamerIds.count { it !in withRecordIds }
-            val requestedName = buildFileNameFromRows(decoded, selectedNames, ExportNaming.Kind.HISTORY)
-            // ★ HTML 拼装 + 写盘放到 IO/Default（台账 H19-2.1/C4/D1）：
-            //   记录数没有上限（用户可选"全部"），几千行时字符串拼装与 MediaStore 写入
-            //   都是实打实的主线程阻塞 —— 封面保存路径已经因为同类问题真崩过一次。
-            val html = withContext(Dispatchers.Default) {
-                buildHtml(
-                    rows = decoded,
-                    rangeLabel = rangeLabel,
-                    streamerIds = streamerIds,
-                    selectedNames = selectedNames,
-                    sectionTitles = sectionTitles,
-                    emptyStreamerCount = emptyStreamerCount,
-                    unparsableRows = unparsableRows,
-                    inProgressCount = inProgressCount
-                )
-            }
-            // ★ 回读 MediaStore 的实际文件名（同名时系统会自动追加 " (1)"）：
-            //   原先回报的是**请求名**，用户按提示去 Download 里找的是另一个名字，找不到文件。
-            val writtenName = writeToDownloads(requestedName, html, "text/html")
-
-            // ★ 文件已经写出去了，后面的事务只做"记账"（台账 H19-C10）：
-            //   原先 CAS 或审计抛异常会让整个导出返回 failure，用户看到"导出失败"，
-            //   但 Download 里其实已经有文件了 —— 于是反复重试、产生一堆同名副本。
-            //   记账失败只降级为警告，不改写"导出成功"这个事实。
-            val bookkeeping = runCatching {
-                check(
-                    exportDao.casStatus(snapshotId, ExportSnapshotStatus.CONSUMING, ExportSnapshotStatus.COMPLETED) > 0
-                ) { "导出状态异常：快照未处于 CONSUMING" }
-                logDao.insertAudit(
-                    AuditLogEntity(
-                        auditId = Ids.newId(), operationId = Ids.newId(), actor = "USER",
-                        action = "EXPORT_HTML", targetType = "export_snapshot", targetStableId = snapshotId,
-                        occurredAt = clock.nowWall(),
-                        detailJson = "{\"sessions\":${decoded.size},\"streamers\":${selectedNames.size}," +
-                            "\"emptyStreamers\":$emptyStreamerCount}"
+                val withRecordIds = decoded.mapNotNull { it["streamerId"]?.toLongOrNull() }.toSet()
+                val emptyStreamerCount = streamerIds.count { it !in withRecordIds }
+                val requestedName = buildFileNameFromRows(decoded, selectedNames, ExportNaming.Kind.HISTORY)
+                // ★ HTML 拼装 + 写盘放到 IO/Default（台账 H19-2.1/C4/D1）：
+                //   记录数没有上限（用户可选"全部"），几千行时字符串拼装与 MediaStore 写入
+                //   都是实打实的主线程阻塞 —— 封面保存路径已经因为同类问题真崩过一次。
+                val html = withContext(Dispatchers.Default) {
+                    buildHtml(
+                        rows = decoded,
+                        rangeLabel = rangeLabel,
+                        streamerIds = streamerIds,
+                        selectedNames = selectedNames,
+                        sectionTitles = sectionTitles,
+                        emptyStreamerCount = emptyStreamerCount,
+                        unparsableRows = unparsableRows,
+                        inProgressCount = inProgressCount
                     )
-                )
-            }
-            bookkeeping.onFailure {
-                runCatching {
-                    logDao.insertAppError(
-                        ApplicationErrorLogEntity(
-                            errorId = Ids.newId(), operationId = null,
+                }
+                // ★ 回读 MediaStore 的实际文件名（同名时系统会自动追加 " (1)"）：
+                //   原先回报的是**请求名**，用户按提示去 Download 里找的是另一个名字，找不到文件。
+                val writtenName = writeToDownloads(requestedName, html, "text/html")
+
+                // ★ 文件已经写出去了，后面的事务只做"记账"（台账 H19-C10）：
+                //   原先 CAS 或审计抛异常会让整个导出返回 failure，用户看到"导出失败"，
+                //   但 Download 里其实已经有文件了 —— 于是反复重试、产生一堆同名副本。
+                //   记账失败只降级为警告，不改写"导出成功"这个事实。
+                val bookkeeping = runCatching {
+                    check(
+                        exportDao.casStatus(snapshotId, ExportSnapshotStatus.CONSUMING, ExportSnapshotStatus.COMPLETED) > 0
+                    ) { "导出状态异常：快照未处于 CONSUMING" }
+                    logDao.insertAudit(
+                        AuditLogEntity(
+                            auditId = Ids.newId(), operationId = Ids.newId(), actor = "USER",
+                            action = "EXPORT_HTML", targetType = "export_snapshot", targetStableId = snapshotId,
                             occurredAt = clock.nowWall(),
-                            errorCode = AppError.UNKNOWN,
-                            detail = "导出已成功但记账失败：${it.message}".take(500)
+                            detailJson = "{\"sessions\":${decoded.size},\"streamers\":${selectedNames.size}," +
+                                "\"emptyStreamers\":$emptyStreamerCount}"
                         )
                     )
                 }
-            }
-            return@runCatching ExportResult(
-                fileName = writtenName,
-                sessionCount = decoded.size,
-                streamerCount = selectedNames.size,
-                emptyStreamerCount = emptyStreamerCount
-            )
-        } catch (e: Throwable) {
-            // 失败/取消即把快照置为终态，避免留在 READY/CONSUMING 成为永久孤儿。
-            // ★ 必须是 Throwable 而不是 Exception（复查发现的缺陷）：OOM 之类的 Error 不是
-            //   Exception，只接 Exception 时它们会把快照永久留在 CONSUMING，而 deleteExpired
-            //   只清已到期的行 —— 构建阶段那条 catch 早就是 Throwable 了，这里口径必须一致。
-            markSnapshotTerminal(snapshotId, terminalStatusFor(e))
-            throw e
-        }
-    }.onFailure { e ->
-        // ★ 取消必须**原样重抛**：runCatching 会把 CancellationException 一并吞成 failure，
-        //   吞掉之后用户看到的是"导出失败：StandaloneCoroutine was cancelled"这种内部英文串，
-        //   而上层（viewModelScope）也失去了"这次是被取消"的语义 —— 离开页面本来不该报错。
-        if (e is CancellationException) {
-            // ★ 不能一律说"快照已置为 CANCELLED"（复查发现的缺陷）：取维护权阶段就被取消时
-            //   根本没有快照行，那样写会在诊断包里留下一条与事实相反的记录。
-            logExportFailure(
-                if (historySnapshotCreated) {
-                    "直播历史导出被取消（用户离开页面或主动取消），快照已置为 CANCELLED"
-                } else {
-                    "直播历史导出被取消（用户离开页面或主动取消），发生在建立快照之前"
+                bookkeeping.onFailure {
+                    runCatching {
+                        logDao.insertAppError(
+                            ApplicationErrorLogEntity(
+                                errorId = Ids.newId(), operationId = null,
+                                occurredAt = clock.nowWall(),
+                                errorCode = AppError.UNKNOWN,
+                                detail = "导出已成功但记账失败：${it.message}".take(500)
+                            )
+                        )
+                    }
                 }
-            )
-            throw e
+                return@runCatching ExportResult(
+                    fileName = writtenName,
+                    sessionCount = decoded.size,
+                    streamerCount = selectedNames.size,
+                    emptyStreamerCount = emptyStreamerCount
+                )
+            } catch (e: Throwable) {
+                // 失败/取消即把快照置为终态，避免留在 READY/CONSUMING 成为永久孤儿。
+                // ★ 必须是 Throwable 而不是 Exception（复查发现的缺陷）：OOM 之类的 Error 不是
+                //   Exception，只接 Exception 时它们会把快照永久留在 CONSUMING，而 deleteExpired
+                //   只清已到期的行 —— 构建阶段那条 catch 早就是 Throwable 了，这里口径必须一致。
+                markSnapshotTerminal(snapshotId, terminalStatusFor(e))
+                throw e
+            }
+        }.onFailure { e ->
+            // ★ 取消必须**原样重抛**：runCatching 会把 CancellationException 一并吞成 failure，
+            //   吞掉之后用户看到的是"导出失败：StandaloneCoroutine was cancelled"这种内部英文串，
+            //   而上层（viewModelScope）也失去了"这次是被取消"的语义 —— 离开页面本来不该报错。
+            if (e is CancellationException) {
+                // ★ 不能一律说"快照已置为 CANCELLED"（复查发现的缺陷）：取维护权阶段就被取消时
+                //   根本没有快照行，那样写会在诊断包里留下一条与事实相反的记录。
+                logExportFailure(
+                    if (historySnapshotCreated) {
+                        "直播历史导出被取消（用户离开页面或主动取消），快照已置为 CANCELLED"
+                    } else {
+                        "直播历史导出被取消（用户离开页面或主动取消），发生在建立快照之前"
+                    }
+                )
+                throw e
+            }
+            // 失败只在这里记一条：拿不到维护权、DAO 异常、写盘失败、MediaStore 失败原先
+            // 只变成 UI banner + logcat，诊断包里查不到任何痕迹。
+            logExportFailure("直播历史导出失败：${e.summary()}")
         }
-        // 失败只在这里记一条：拿不到维护权、DAO 异常、写盘失败、MediaStore 失败原先
-        // 只变成 UI banner + logcat，诊断包里查不到任何痕迹。
-        logExportFailure("直播历史导出失败：${e.summary()}")
     }
 
     /**
@@ -366,10 +357,11 @@ class ExportRepository @Inject constructor(
         // 统计导出不建快照：取消时不需要（也不能）改快照状态，所以取消文案里不出现"快照"二字
         // （历史导出那边才会按"取消发生在建快照之前/之后"区分措辞）。
         var emptyStreamerCount = 0
+        val maintenance = RuntimeLockRepository.MaintenanceLease(MaintenanceMode.BACKUP)
         try {
             // ★ 与历史导出同因：取维护权放进 try，否则它在取消边界抛异常时 finally 不执行，
             //   maintenanceMode 会停在 'BACKUP'（监控停摆到下次冷启动）。
-            check(runtimeLockRepository.takeOverForMaintenance(MaintenanceMode.BACKUP)) {
+            check(runtimeLockRepository.takeOverForMaintenance(maintenance)) {
                 "无法取得维护权（导出/恢复/清理正在进行），请稍后再试"
             }
             val sessions = db.liveSessionDao().listClosedForStreamersBetween(streamerIds, from, to)
@@ -413,8 +405,10 @@ class ExportRepository @Inject constructor(
             //   ★ 这里刻意保留 Result 而不是 getOrNull()：取数失败与"确实没有数据"必须分开 ——
             //   原先异常被吞成 null，报告就写"该时间范围内没有直播记录"，
             //   用户据此得出"我没直播过"的错误结论。
+            val sessionsByStreamer = sessions.groupBy { it.streamerId }
             val seriesResults = streamerIds.map { id ->
-                runCatching { statsSeriesRepository.seriesCustom(id, effectiveFrom, effectiveTo) }
+                runCatching { statsSeriesRepository.seriesCustom(id, effectiveFrom, effectiveTo,
+                    sessionsByStreamer[id].orEmpty()) }
             }
             var statsFailureCount = 0
             seriesResults.forEachIndexed { index, result ->
@@ -452,7 +446,7 @@ class ExportRepository @Inject constructor(
             fileName = writeToDownloads(fileName, html, "text/html")
         } finally {
             // 与历史导出同因：释放维护权的挂起写必须在 NonCancellable 里做
-            exitMaintenanceSafely()
+            exitMaintenanceSafely(maintenance)
         }
 
         // ★ 文件已经写出去了，后面的记账失败不该改写结论（第二轮审查发现：这里与 exportHistory
@@ -807,10 +801,10 @@ $sections
      *
      * 释放失败同样要留痕：那意味着上面这个后果已经发生，诊断包里不能只有"监控无缘无故停了"。
      */
-    private suspend fun exitMaintenanceSafely() {
+    private suspend fun exitMaintenanceSafely(maintenance: RuntimeLockRepository.MaintenanceLease) {
         withContext(NonCancellable) {
             val released = runCatching {
-                runtimeLockRepository.exitMaintenance(MaintenanceMode.BACKUP)
+                runtimeLockRepository.exitMaintenance(maintenance)
             }
             if (released.getOrNull() != true) {
                 // ★ 返回 0 **不等于**释放失败（复查发现的缺陷）：exitMaintenance 带
@@ -818,7 +812,8 @@ $sections
                 //   可能已被冷启动的 resetStaleMaintenance 改成 OFF，那其实是**已释放**。
                 //   所以回读一次当前模式再下结论，否则会写一条与事实相反的告警。
                 val mode = runCatching { db.runtimeLockDao().get()?.maintenanceMode }.getOrNull()
-                if (mode != null && mode != MaintenanceMode.OFF) {
+                if (mode != null && mode != MaintenanceMode.OFF &&
+                    db.runtimeLockDao().get()?.fencingToken == maintenance.owner) {
                     logExportFailure("导出收尾：释放维护权后 maintenanceMode 仍是 '$mode'（监控将取不到租约）")
                 } else if (released.isFailure) {
                     logExportFailure("导出收尾：释放维护权抛异常：${released.exceptionOrNull()?.summary()}")

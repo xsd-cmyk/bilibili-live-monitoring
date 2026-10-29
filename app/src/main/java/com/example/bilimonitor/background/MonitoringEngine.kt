@@ -169,11 +169,7 @@ class MonitoringEngine @Inject constructor(
                 MonitoringResult(false, "tick_budget_exceeded")
             }
         }
-        // ★ 通知投递放在 Tick 互斥锁**之外**（台账 H19-E3）：
-        //   投递可能包含封面图片下载（单条最长数秒）且最多 20 条串行，
-        //   放在锁内会把手动刷新、Worker、恢复补检全部堵住，表现为"监控卡住"。
-        runCatching { notificationDispatcher.dispatchDue() }
-            .onFailure { logAppError(AppError.UNKNOWN, "通知投递失败：${it.message}") }
+        // Committed events are delivered by the independent deadline-driven coordinator.
         return result
     }
 
@@ -489,7 +485,6 @@ class MonitoringEngine @Inject constructor(
         }
 
         runCatching { notificationRepository.processWindowEnds() }
-        scheduleWindowEndFlush()
         // ★ 报出去的失败主播数与内部判定**同源**（账面），不再是另一份局部累加变量。
         return MonitoringResult(true, reason, checked, round.failedCount)
     }
@@ -896,8 +891,9 @@ class MonitoringEngine @Inject constructor(
                     )
                 ),
                 now = now,
-                configVersion = snapshot.configVersion
-            )
+                configVersion = snapshot.configVersion,
+                    clock = clock
+                )
         }.onFailure {
             // 通知写不进去也必须留痕：否则"用户没收到封禁通知"这件事在库里查不到原因。
             logAppError(AppError.DATABASE_ERROR, "封禁通知写入失败（${action}）：${it.message}")
@@ -1421,32 +1417,6 @@ class MonitoringEngine @Inject constructor(
         return null
     }
 
-    /**
-     * 聚合窗口到期释放不能等下一个 Tick（最长可能滞留一个完整监控周期）。
-     * Tick 结束后预约一次到期即时的窗口结算 + 投递（幂等，重复执行无副作用）。
-     */
-    private suspend fun scheduleWindowEndFlush() {
-        val windows = runCatching {
-            dbHandle.notificationAggregateDao().listInProgress()
-        }.getOrNull().orEmpty()
-        val nextEnd = windows.filter { it.bootId == clock.bootId() }
-            .minOfOrNull { it.windowEndElapsed } ?: return
-        val delayMs = (nextEnd - clock.nowElapsed()).coerceIn(0, 60_000L) + 300
-        scope.launch {
-            // 整个延迟任务都要有异常边界（台账 H19-A4）：这是 fire-and-forget 协程，
-            // 而 appScope 没有 CoroutineExceptionHandler —— 任何未捕获异常都会直达默认处理器，
-            // 被 CrashRecorder 记一笔后**杀掉进程**。原先只有 processWindowEnds 被包住，
-            // dispatchDue() 里的 DB 查询（findDue）裸奔，一次 SQLiteException 就能崩应用。
-            runCatching {
-                kotlinx.coroutines.delay(delayMs)
-                notificationRepository.processWindowEnds()
-                notificationDispatcher.dispatchDue()
-            }.onFailure {
-                logAppError(AppError.UNKNOWN, "聚合窗口到期投递失败：${it.message}")
-            }
-        }
-    }
-
     private suspend fun applySafely(
         streamerStableId: String,
         uid: Long,
@@ -1952,6 +1922,10 @@ class MonitoringEngine @Inject constructor(
         GapReason.API_UNAVAILABLE.name -> "接口已恢复，监控继续"
         GapReason.NETWORK_UNAVAILABLE.name -> "网络已恢复，监控继续"
         else -> "监控已恢复"
+    }
+
+    suspend fun recordNetworkPause() = tickMutex.withLock {
+        openSystemGap(GapReason.NETWORK_UNAVAILABLE, clock.nowWall())
     }
 
     private suspend fun openSystemGap(reason: GapReason, now: Long) {

@@ -17,8 +17,8 @@ android {
         applicationId = "com.example.bilimonitor"
         minSdk = 31
         targetSdk = 35
-        versionCode = 5
-        versionName = "0622.2"
+        versionCode = 7
+        versionName = "0622.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -6,7 +6,10 @@ HTML 报告导出与整应用配置（JSON）备份/恢复；界面外观（名�
 
 > 全部业务数据保存在本机 SQLite。除访问 B 站公开接口、以及你自己发起的登录与导入操作外，不上传任何数据。
 
-当前版本：`Kaoru` · `versionName 0622.2` / `versionCode 5`，数据库版本 **11**。
+当前版本：`Kaoru` · `versionName 0622.4` / `versionCode 7`，数据库版本 **12**。
+已通过 371 项单元测试、35 项模拟器回归及 v11→v12 覆盖安装迁移；2026-10-29 用户确认测试完成，未发现问题。
+下载：[Kaoru v0622.4](https://github.com/xsd-cmyk/bilibili-live-monitoring/releases/tag/v0622.4)。
+本轮修复详见缺陷台账 H77–H79，回归步骤见 [0622.4 验收清单](docs/TEST_CHECKLIST_0622.4.md)。
 
 **目录**：[功能清单](#功能清单) · [界面与交互特色](#界面与交互特色) · [安装与构建](#安装与构建) ·
 [技术栈](#技术栈) · [架构要点](#架构要点) · [已知限制与未验证项](#已知限制与未验证项) ·
@@ -327,7 +330,7 @@ docs/               设计文档、缺陷台账、静态审查报告
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/DEFECT_LEDGER.md`](docs/DEFECT_LEDGER.md) | **缺陷台账**（H1–H55）：每个问题的现象 / 根因 / 证据 / 修法 / **验证状态与未验证部分**。项目最有价值的文件之一 |
+| [`docs/DEFECT_LEDGER.md`](docs/DEFECT_LEDGER.md) | **缺陷台账**（H1–H79）：每个问题的现象 / 根因 / 证据 / 修法 / **验证状态与未验证部分**。项目最有价值的文件之一 |
 | [`PROJECT_SUMMARY.md`](PROJECT_SUMMARY.md) | **项目总结**：设计原则、架构与关键机制、UI 设计体系、工程质量实践、已知局限与后续方向 |
 | [`docs/STATIC_REVIEW_REPORT.md`](docs/STATIC_REVIEW_REPORT.md) | 全项目稳定性与健壮性静态审查（跨切面 11 条 + 分片 74 条） |
 | [`docs/CODE_REVIEW_REPORT.md`](docs/CODE_REVIEW_REPORT.md) | 早期代码审查报告 |

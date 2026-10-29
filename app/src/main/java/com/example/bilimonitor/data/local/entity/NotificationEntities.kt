@@ -112,7 +112,10 @@ data class NotificationOutboxEntity(
     val deliveryAttemptId: String?,
     val sentAt: Long?,
     val lastError: String?,
-    val configVersion: Long
+    val configVersion: Long,
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val timelineWall: Long? = null,
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val timelineElapsed: Long? = null,
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val timelineBootId: String? = null
 )
 
 @Entity(
@@ -169,13 +172,7 @@ data class NotificationHistoryEntity(
     val attemptCount: Int,
     /** 送达时刻（SENT 时写入）。 */
     val deliveredAt: Long?,
-    /**
-     * **预留列：当前没有任何写入者**（2026 复查核实）。
-     *
-     * 失败原因一直写在 [detail] 里（Dispatcher 把 Outbox 的 `lastError` 传给它），
-     * 界面也读 [detail] —— 这一列留着只是为了"将来要独立的短原因码"时不必改 schema，
-     * 不要按列名假定它有值（诊断包导出时两列都会带上，查原因请看 detail）。
-     */
+    /** Actual user interaction (USER_CLICKED / USER_DISMISSED); delivery failures remain in detail. */
     val reason: String?,
     val recordedAt: Long,
     val updatedAt: Long,

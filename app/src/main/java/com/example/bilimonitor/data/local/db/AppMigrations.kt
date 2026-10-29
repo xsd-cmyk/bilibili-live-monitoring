@@ -395,6 +395,15 @@ object AppMigrations {
         }
     }
 
+    val V11_12__notificationTimeline = object : Migration(11, 12) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            dropPartialIndexes(db)
+            db.execSQL("ALTER TABLE notification_outbox ADD COLUMN timelineWall INTEGER DEFAULT NULL")
+            db.execSQL("ALTER TABLE notification_outbox ADD COLUMN timelineElapsed INTEGER DEFAULT NULL")
+            db.execSQL("ALTER TABLE notification_outbox ADD COLUMN timelineBootId TEXT DEFAULT NULL")
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         V1_2__createPendingIndexes,
         V2_3__defaultInterval180,
@@ -405,6 +414,7 @@ object AppMigrations {
         V7_8__notificationChangeSwitches,
         V8_9__failureRatioAndBanRecheck,
         V9_10__circuitBreakerSwitch,
-        V10_11__aggregateKindAndEndAggregation
+        V10_11__aggregateKindAndEndAggregation,
+        V11_12__notificationTimeline
     )
 }

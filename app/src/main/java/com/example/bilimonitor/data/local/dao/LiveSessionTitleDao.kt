@@ -27,6 +27,9 @@ interface LiveSessionTitleDao {
     @Query("SELECT count(*) FROM live_session_title WHERE sessionStableId = :sessionStableId")
     suspend fun countForSession(sessionStableId: String): Int
 
+    @Query("SELECT * FROM live_session_title WHERE sessionStableId IN (:ids) ORDER BY observedAt ASC")
+    fun observeForSessions(ids: List<String>): Flow<List<LiveSessionTitleEntity>>
+
     @Query("SELECT * FROM live_session_title ORDER BY observedAt ASC")
     fun observeAll(): Flow<List<LiveSessionTitleEntity>>
 

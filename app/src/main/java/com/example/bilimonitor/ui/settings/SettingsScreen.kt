@@ -74,6 +74,7 @@ fun SettingsScreen(
     val keepAliveBusy by viewModel.keepAliveBusy.collectAsStateWithLifecycle()
     val powerExemption by viewModel.powerExemption.collectAsStateWithLifecycle()
     val wakelockHeld by viewModel.wakelockHeld.collectAsStateWithLifecycle()
+    val wakelockStatus by viewModel.wakelockStatus.collectAsStateWithLifecycle()
     var showKeepAliveDialog by remember { mutableStateOf(false) }
     // 通知权限是**系统状态**，不是 Compose 状态：在组合期直接调 checkSelfPermission 的话，
     // 用户去系统设置里授权/撤销后回到本页，读到的仍是进入页面那一刻的值 —— 页面也不会重组，
@@ -131,7 +132,7 @@ fun SettingsScreen(
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text("运行模式", fontWeight = FontWeight.Medium)
                 listOf(
-                    MonitoringMode.REALTIME to "实时监控（前台服务，间隔更短）",
+                    MonitoringMode.REALTIME to "实时监控（前台服务，锁屏实时会增加耗电）",
                     MonitoringMode.POWER_SAVING to "省电监控（系统调度，约 15 分钟以上）",
                     MonitoringMode.MANUAL to "手动（仅打开 App 时检查）"
                 ).forEach { (mode, label) ->
@@ -174,6 +175,8 @@ fun SettingsScreen(
                     onCommit = { viewModel.update { s -> s.copy(endConfirmationCount = it) } }
                 )
             }
+
+            NotificationDeliverySettingsCard()
 
             SettingSectionCard("通知聚合") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -336,6 +339,7 @@ fun SettingsScreen(
             AdvancedKeepAliveCard(
                 wakelockEnabled = advancedKeepAlive.wakelockEnabled,
                 wakelockHeld = wakelockHeld,
+                wakelockStatus = wakelockStatus,
                 currentLevel = advancedKeepAlive.privilegeLevel,
                 power = powerExemption,
                 onRequestIgnoreBattery = { viewModel.requestIgnoreBatteryOptimizations() },

@@ -300,9 +300,9 @@ class CircuitBreakerConfigTest {
     }
 
     @Test
-    fun `DB_VERSION 升到 11`() {
+    fun `DB_VERSION 升到 12`() {
         val field = AppDatabase::class.java.getField("DB_VERSION")
-        assertEquals("库版本必须与 @Database(version = ...) 同步", 11, field.getInt(null))
+        assertEquals("库版本必须与 @Database(version = ...) 同步", 12, field.getInt(null))
     }
 
     @Test
@@ -315,9 +315,20 @@ class CircuitBreakerConfigTest {
         )
         assertEquals(
             "迁移链必须首尾相接：1→2→…→10→11",
-            listOf(1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10, 10 to 11),
+            listOf(1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10, 10 to 11, 11 to 12),
             pairs
         )
+    }
+
+    @Test
+    fun `V11_12 保留旧通知并添加可空时间锚`() {
+        val recorder = RecordingDb()
+        AppMigrations.V11_12__notificationTimeline.migrate(recorder.create())
+        assertEquals(16, recorder.statements.count { it.startsWith("DROP INDEX") })
+        assertTrue(recorder.statements.contains("ALTER TABLE notification_outbox ADD COLUMN timelineWall INTEGER DEFAULT NULL"))
+        assertTrue(recorder.statements.contains("ALTER TABLE notification_outbox ADD COLUMN timelineElapsed INTEGER DEFAULT NULL"))
+        assertTrue(recorder.statements.contains("ALTER TABLE notification_outbox ADD COLUMN timelineBootId TEXT DEFAULT NULL"))
+        assertFalse(recorder.statements.any { it.startsWith("DELETE") || it.startsWith("DROP TABLE") })
     }
 
     @Test

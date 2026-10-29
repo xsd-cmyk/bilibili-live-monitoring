@@ -267,5 +267,6 @@
             <activity-alias xmlns:android="http://schemas.android.com/apk/res/android" android:name="IconPreset_13_3" android:enabled="false" android:exported="true" android:targetActivity=".MainActivity" android:icon="@mipmap/ic_launcher_preset_13" android:label="豆豆知道了"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity-alias>
 
         <!-- END GENERATED ICON ALIASES -->
+        <receiver android:name=".notify.NotificationDismissReceiver" android:exported="false" />
     </application>
 </manifest>

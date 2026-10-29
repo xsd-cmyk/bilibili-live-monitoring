@@ -66,7 +66,8 @@ data class DataUiState(
 @HiltViewModel
 class DataViewModel @Inject constructor(
     private val backupRepository: BackupRepository,
-    val maintenanceRepository: MaintenanceRepository
+    val maintenanceRepository: MaintenanceRepository,
+    private val monitoringController: com.example.bilimonitor.background.MonitoringController
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(DataUiState())
@@ -162,7 +163,14 @@ class DataViewModel @Inject constructor(
         // 且无论成功/失败/抛异常都会在 finally 复位
         runBusy("恢复失败") {
             val summary = try {
-                backupRepository.applyRestore(pre.restoreRunId, content)
+                try {
+                    backupRepository.applyRestore(pre.restoreRunId, content)
+                } finally {
+                    // applyRestore releases maintenance before returning, even on cancellation.
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                        monitoringController.syncWithConfig()
+                    }
+                }
             } catch (e: Exception) {
                 // ★ 失败必须留在页面上：原先只写 message，而 message 会在 4 秒后自动清除
                 //   （见下面 LaunchedEffect），用户根本来不及看清"哪一步失败了"。

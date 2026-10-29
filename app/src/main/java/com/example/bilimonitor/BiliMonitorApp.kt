@@ -21,6 +21,9 @@ class BiliMonitorApp : Application(), Configuration.Provider {
     @Inject lateinit var workerFactory: HiltWorkerFactory
 
     @Inject lateinit var startupRecovery: StartupRecovery
+    @Inject lateinit var notificationCoordinator: com.example.bilimonitor.background.NotificationDeliveryCoordinator
+
+    @Inject lateinit var logDao: com.example.bilimonitor.data.local.dao.LogDao
 
     @Inject lateinit var clock: AppClock
 
@@ -48,6 +51,19 @@ class BiliMonitorApp : Application(), Configuration.Provider {
             // 至少 logcat 里要看得到。
             runCatching { startupRecovery.run() }.onFailure {
                 android.util.Log.e("BiliMonitorApp", "启动恢复整体失败：${it.message}", it)
+            }
+            notificationCoordinator.start()
+            try {
+                com.example.bilimonitor.background.MaintenanceWorker.schedule(this@BiliMonitorApp)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
+                try {
+                    logDao.insertAppError(com.example.bilimonitor.data.local.entity.ApplicationErrorLogEntity(
+                        com.example.bilimonitor.core.Ids.newId(), null, clock.nowWall(),
+                        com.example.bilimonitor.data.local.AppError.BACKGROUND_EXECUTION_RESTRICTED,
+                        "定期清理排程失败：${e.message}".take(500)))
+                } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+                catch (error: Exception) { android.util.Log.e("BiliMonitorApp", "无法记录清理排程失败", error) }
             }
         }
     }
