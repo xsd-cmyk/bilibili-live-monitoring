@@ -43,6 +43,8 @@ data class MonitoringConfigEntity(
     val startConfirmationCount: Int,
     val endConfirmationCount: Int,
     val placeholderText: String,
+    @ColumnInfo(defaultValue = "24") val nameRefreshHours: Int = 24,
+    @ColumnInfo(defaultValue = "1") val nameRetryMinutes: Int = 1,
     /**
      * 触发重试/熔断的**最小失败占比**（百分比，用户可配，默认 50）。
      *
@@ -105,6 +107,8 @@ data class MonitoringConfigRevisionEntity(
     val startConfirmationCount: Int,
     val endConfirmationCount: Int,
     val placeholderText: String,
+    @ColumnInfo(defaultValue = "24") val nameRefreshHours: Int = 24,
+    @ColumnInfo(defaultValue = "1") val nameRetryMinutes: Int = 1,
     /** 修订快照同样带上 v9 的两个新字段，避免"当前值有、历史值无"的口径分叉。 */
     @ColumnInfo(defaultValue = "50") val retryFailureRatioPercent: Int = 50,
     @ColumnInfo(defaultValue = "1800") val banRecheckIntervalSeconds: Int = 1800,
@@ -126,6 +130,7 @@ data class SourceDataRevisionEntity(
 data class SystemRuntimeLockEntity(
     @PrimaryKey val singletonId: Int,
     val maintenanceMode: MaintenanceMode,
+    @ColumnInfo(defaultValue = "0") val nameMaintenanceEpoch: Long = 0,
     val monitoringLeaseId: String?,
     val runtimeInstanceId: String?,
     val monitorGeneration: Long,

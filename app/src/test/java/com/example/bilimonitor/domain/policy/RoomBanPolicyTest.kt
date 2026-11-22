@@ -23,6 +23,17 @@ import org.junit.Test
  * 由引擎跳过常规检查并在复查到期时探一次，解封后自动恢复。
  */
 class RoomBanPolicyTest {
+    @Test fun onlyFailuresAndLiveToOfflineCandidatesWarrantAnExtraProbe() {
+        val live = com.example.bilimonitor.data.local.ConfirmedLiveStatus.LIVE
+        val offline = com.example.bilimonitor.data.local.ConfirmedLiveStatus.OFFLINE
+        val success = com.example.bilimonitor.data.local.ObservationResult.SUCCESS
+        assertTrue(RoomBanPolicy.warrantsProbe(success, live, offline))
+        assertFalse(RoomBanPolicy.warrantsProbe(success, live, live))
+        assertFalse(RoomBanPolicy.warrantsProbe(success, offline, offline))
+        assertFalse(RoomBanPolicy.warrantsProbe(success, live, com.example.bilimonitor.data.local.ConfirmedLiveStatus.ROUND))
+        assertTrue(RoomBanPolicy.warrantsProbe(com.example.bilimonitor.data.local.ObservationResult.INVALID, offline, null))
+    }
+
 
     private val now = 1_800_000_000_000L
 

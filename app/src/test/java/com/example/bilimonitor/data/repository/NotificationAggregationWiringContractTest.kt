@@ -22,7 +22,7 @@ class NotificationAggregationWiringContractTest {
     private val writer: String by lazy { readSource("data/repository/NotificationOutboxWriter.kt") }
     private val repository: String by lazy { readSource("data/repository/NotificationRepository.kt") }
     private val poster: String by lazy { readSource("notify/NotificationPoster.kt") }
-    private val screen: String by lazy { readSource("ui/settings/SettingsScreen.kt") }
+    private val screen: String by lazy { readSource("ui/settings/NoticeSettingsScreen.kt") }
 
     @Test
     fun `窗口绑定阶段不得提前冻结窗口`() {

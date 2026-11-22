@@ -44,6 +44,10 @@ interface ConfigDao {
     @Query("SELECT * FROM monitoring_config WHERE singletonId = 1")
     fun observeConfig(): Flow<MonitoringConfigEntity?>
 
+    @Query("""SELECT EXISTS(SELECT 1 FROM audit_log WHERE targetType='monitoring_config' AND targetStableId='1'
+        AND action='SET_KEEPALIVE_CHOICE') OR EXISTS(SELECT 1 FROM monitoring_config_revision WHERE backgroundKeepAliveChoice != 'UNSET')""")
+    suspend fun hasSavedKeepAliveChoice(): Boolean
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertConfig(config: MonitoringConfigEntity)
 
@@ -66,7 +70,7 @@ interface ConfigDao {
             backgroundKeepAliveChoice = :keepAliveChoice, noGuaranteeAcknowledged = :noGuaranteeAcknowledged,
             noGuaranteeAcknowledgedAt = :noGuaranteeAcknowledgedAt,
             startConfirmationCount = :startConfirmationCount, endConfirmationCount = :endConfirmationCount,
-            placeholderText = :placeholderText,
+            placeholderText = :placeholderText, nameRefreshHours = :nameRefreshHours, nameRetryMinutes = :nameRetryMinutes,
             retryFailureRatioPercent = :retryFailureRatioPercent,
             banRecheckIntervalSeconds = :banRecheckIntervalSeconds,
             circuitBreakerEnabled = :circuitBreakerEnabled,
@@ -90,6 +94,7 @@ interface ConfigDao {
         /** v10 熔断总开关（false = 失败批次一直重试、不暂停）。 */
         circuitBreakerEnabled: Boolean,
         /** v11 批量下播合并开关。 */
+        nameRefreshHours: Int, nameRetryMinutes: Int,
         endAggregationEnabled: Boolean, now: Long
     ): Int
 
@@ -194,7 +199,7 @@ interface RuntimeLockDao {
     @Query(
         """
         UPDATE system_runtime_lock
-        SET maintenanceMode = :mode, monitoringLeaseId = NULL,
+        SET maintenanceMode = :mode, nameMaintenanceEpoch = nameMaintenanceEpoch + 1, monitoringLeaseId = NULL,
             leaseUntilWall = NULL, leaseUntilElapsed = NULL, leaseBootId = NULL,
             fencingToken = :owner, runtimeInstanceId = NULL, updatedAt = :now
         WHERE singletonId = 1
@@ -223,7 +228,7 @@ interface RuntimeLockDao {
     @Query(
         """
         UPDATE system_runtime_lock
-        SET maintenanceMode = :mode, monitoringLeaseId = NULL,
+        SET maintenanceMode = :mode, nameMaintenanceEpoch = nameMaintenanceEpoch + 1, monitoringLeaseId = NULL,
             leaseUntilWall = NULL, leaseUntilElapsed = NULL, leaseBootId = NULL,
             fencingToken = :owner, runtimeInstanceId = NULL,
             monitorGeneration = monitorGeneration + 1, updatedAt = :now

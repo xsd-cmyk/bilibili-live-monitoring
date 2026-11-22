@@ -34,7 +34,7 @@ class MonitorDaoSqlContractTest {
     private val source: String by lazy { readDaoSource() }
 
     @Test
-    fun `streamer CAS 必须检查暂停、且不得再有恒真的主播代际条件`() {
+    fun `streamer CAS 必须检查暂停和请求时的主播代际`() {
         val sql = querySqlOf("suspend fun casConfirmedObservation(")
         val params = parameterListOf("suspend fun casConfirmedObservation(")
 
@@ -42,14 +42,8 @@ class MonitorDaoSqlContractTest {
             "必须带 monitoringEnabled = 1：暂停之后在途的观察不得再提交转换（缺陷 3 的修复点）",
             sql.contains("monitoringEnabled = 1")
         )
-        assertFalse(
-            "恒真的 streamerMonitorGeneration 条件必须删掉（期望值取自同一事务内刚读到的行）",
-            sql.contains("streamerMonitorGeneration")
-        )
-        assertFalse(
-            "恒真的 streamerMonitorGeneration 形参也必须删掉，否则会被再次用进 WHERE",
-            params.contains("streamerMonitorGeneration")
-        )
+        assertTrue(sql.contains("streamerMonitorGeneration = :requestGeneration"))
+        assertTrue(params.contains("requestGeneration"))
         assertTrue(
             "单调观察序号必须保留（真正的保护之一）",
             sql.contains("observationSequence < :observationSequence")

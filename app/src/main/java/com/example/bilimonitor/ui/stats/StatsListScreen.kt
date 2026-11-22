@@ -1,5 +1,7 @@
 ﻿package com.example.bilimonitor.ui.stats
 
+import com.example.bilimonitor.ui.common.GlassInfoPanel
+import com.example.bilimonitor.ui.nav.LocalDockClearance
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,7 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -58,16 +60,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-
-/**
- * 列表底部内边距 —— 由浮层 Dock 的**实际占位**推导，不是随手取的数：
- *  - Dock 本体 ≈72dp：图标 24 + 上下 padding 3+3 + 标签行高 16 + 间距 2 + 行/列内边距各 6；
- *  - 再加 26dp 悬浮外边距（`DockNavigationBar` 外层 Box 的 vertical padding，见 AppNavHost.kt）。
- * 遮挡带合计 ≈98dp，取 96dp（普通导航样式下 NavigationBar 约 80dp，96dp 也够）。
- * 只用在**有底栏的一级页面**上：Dock 只在这 4 个路由渲染（AppNavHost 的 showBottomBar），
- * 二级页面没有浮层，保持原有间距即可。
- */
-private val LIST_BOTTOM_INSET = 136.dp
 
 data class StatsListUiState(
     val loading: Boolean = true,
@@ -307,21 +299,23 @@ fun StatsListScreen(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        if (state.query.isBlank()) "还没有统计数据\n确认开播后会自动记录"
-                        else "没有匹配的主播",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    GlassInfoPanel {
+                        Text(
+                            if (state.query.isBlank()) "还没有统计数据\n确认开播后会自动记录"
+                            else "没有匹配的主播",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             } else {
                 // Dock 已不在 Scaffold 的 bottomBar 槽里，内容区不会自动避让：
                 // 没有这段底部内边距，列表最后一张卡片会被浮层永久压住（滚到底也露不全）。
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = LIST_BOTTOM_INSET)
+                    contentPadding = PaddingValues(bottom = LocalDockClearance.current ?: 136.dp)
                 ) {
                     items(state.summaries, key = { it.streamerId }) { s ->
-                        Card(
+                        AppCard(
                             Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 4.dp)

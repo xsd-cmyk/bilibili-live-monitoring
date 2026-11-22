@@ -39,8 +39,13 @@ data class StreamerEntity(
     val shortRoomId: Long?,
     /** NOT NULL；昵称缺失时写 placeholderText（249.9.1.1）。 */
     val name: String,
-    /** 1 = name 为用户手工编辑或占位文案，远程刷新不得覆盖。 */
+    /** 人工锁名优先于所有远程名称更新。 */
     val nameLocked: Boolean,
+    val nameAttemptWall: Long? = null,
+    val nameAttemptElapsed: Long? = null,
+    val nameAttemptBoot: String? = null,
+    @androidx.room.ColumnInfo(defaultValue = "0") val nameAttemptSucceeded: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "0") val nameRevision: Long = 0,
     val avatarUrl: String?,
     val roomTitle: String?,
     val parentAreaName: String?,
@@ -60,6 +65,8 @@ data class StreamerEntity(
     val monitorPolicyStableId: String?,
     val lastCheckedAt: Long?,
     val lastConfirmedAt: Long?,
+    val lastConfirmedElapsed: Long? = null,
+    val lastConfirmedBootId: String? = null,
     /** 缓存派生列；判定式与写入者见 0.6.16.1 第 3 条。 */
     val freshnessStatus: DataFreshness,
     val lastLiveStartedAt: Long?,

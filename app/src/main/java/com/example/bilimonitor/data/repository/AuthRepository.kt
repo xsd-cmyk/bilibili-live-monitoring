@@ -270,9 +270,9 @@ class AuthRepository @Inject constructor(
 
     suspend fun logout() {
         val now = clock.nowWall()
-        val nextGeneration = currentAuthGeneration() + 1
         cookieJar.clearAll()
         db.withTransaction {
+            val nextGeneration = currentAuthGeneration() + 1
             // 真正推进凭证代际（0.4 / 248.9）：
             // currentAuthGeneration() = MAX(authGeneration)，而 revokeAll 只置 revokedAt、
             // 不改 authGeneration。原实现只把 nextGeneration 写进审计 JSON，

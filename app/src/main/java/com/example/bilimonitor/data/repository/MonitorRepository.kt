@@ -42,6 +42,9 @@ import com.example.bilimonitor.domain.model.RemoteLiveRoom
 import com.example.bilimonitor.domain.model.StreamerObservation
 import com.example.bilimonitor.domain.policy.FreshnessPolicy
 import com.example.bilimonitor.domain.policy.StateConfirmationPolicy
+import com.example.bilimonitor.domain.policy.RoomBanCodec
+import com.example.bilimonitor.domain.policy.RoomBanState
+import com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity
 import androidx.room.withTransaction
 import android.database.sqlite.SQLiteConstraintException
 import java.util.UUID
@@ -183,22 +186,52 @@ class MonitorRepository @Inject constructor(
      */
     private val failureLogGate = com.example.bilimonitor.domain.policy.ErrorLogEdgeGate()
 
-    /**
-     * 写入 / 清除某位主播的「封禁中」标记（用户诉求 1）。
-     *
-     * ★ 独立性：这个方法**只**动 `streamer.lastError` 与 `updatedAt`，
-     *   - 不碰 `confirmedLiveStatus`（封禁不是一种"未开播"）；
-     *   - 不碰 `observationSequence` / 代际 / fencing（不参与 CAS 状态机）；
-     *   - 不写 `status_history` / `live_event` / `live_session`（不影响历史场次）；
-     *   - 因此也**不可能**产生开播/下播通知。
-     *
-     * 标记内容由 [com.example.bilimonitor.domain.policy.RoomBanCodec] 编码；
-     * `state == null` 表示解除封禁（把 `lastError` 清回 NULL）。
-     */
-    suspend fun applyBanState(streamerId: Long, state: com.example.bilimonitor.domain.policy.RoomBanState?): Boolean {
+    suspend fun applyBanState(streamer: StreamerEntity, lease: MonitoringLease, state: RoomBanState?,
+        expectedIntervalSeconds: Int, onApplied: suspend () -> Unit): Boolean = db.withTransaction {
+        val previous = RoomBanCodec.decode(streamer.lastError)
+        if (state == null && previous == null) return@withTransaction false
+        val evidence = state ?: previous?.takeUnless { it.apiMessage == "restored_requires_recheck" }
         val now = clock.nowWall()
-        val encoded = state?.let { com.example.bilimonitor.domain.policy.RoomBanCodec.encode(it) }
-        return streamerDao.updateBanState(streamerId, encoded, now) > 0
+        val open = if (evidence == null) emptyList() else liveSessionDao.listOpenForStreamer(streamer.id)
+        val settle = evidence != null && (state != null || open.none { (it.startTime ?: it.createdAt) > evidence.lastProbeAtWall })
+        if (streamerDao.updateBanState(streamer.id, streamer.uid, streamer.streamerMonitorGeneration,
+                streamer.observationSequence, lease.monitorGeneration, lease.fencingToken, state?.let(RoomBanCodec::encode), settle, now) != 1)
+            return@withTransaction false
+        if (evidence != null) {
+            val history = db.roomBanHistoryDao()
+            val roomId = streamer.roomId ?: streamer.shortRoomId
+            val id = RoomBanHistoryEntity.key(streamer.stableId, evidence.lockedAtWall)
+            val sessions = open.filter { (it.startTime ?: it.createdAt) <= evidence.lastProbeAtWall }
+            val linked = sessions.firstOrNull { (it.startTime ?: it.createdAt) <= evidence.lockedAtWall }?.stableId
+            history.insert(RoomBanHistoryEntity(id, streamer.id, linked, evidence.lockedAtWall, null, evidence.lockTill, roomId))
+            history.noteDetails(id, linked, evidence.lockTill, roomId)
+            if (state == null) history.noteLifted(streamer.id, evidence.lockedAtWall, maxOf(now, evidence.lockedAtWall))
+            val activeInterval = reliableIntervalDao.findActiveByStreamer(streamer.stableId)
+            var upperBound: Long? = null
+            var intervalEnd = evidence.lockedAtWall
+            for (session in sessions) {
+                val observedAt = if ((session.startTime ?: session.createdAt) <= evidence.lockedAtWall) evidence.lockedAtWall else evidence.lastProbeAtWall
+                val closed = closeOpenSessionAsObserved(session, observedAt, expectedIntervalSeconds, upperBound, reason = "ROOM_BANNED")
+                check(closed.rows == 1) { "封禁场次已被修改" }
+                if (session.stableId == activeInterval?.sessionStableId) intervalEnd = closed.endTime
+                streamerDao.noteLiveEnded(streamer.id, closed.endTime, now)
+                upperBound = session.startTime ?: session.createdAt
+            }
+            if (settle) {
+                activeInterval?.let { reliableIntervalDao.closeActiveByStreamer(streamer.stableId,
+                    ReliableIntervalInvalidReason.SESSION_CLOSED, maxOf(it.startedAt, intervalEnd)) }
+                streamerDao.deletePendingTransition(streamer.id)
+                if (streamer.confirmedLiveStatus != ConfirmedLiveStatus.OFFLINE) {
+                    statusHistoryDao.insert(StatusHistoryEntity(Ids.newId(), streamer.id, streamer.stableId, linked,
+                        streamer.confirmedLiveStatus, ConfirmedLiveStatus.OFFLINE, ObservationResult.SUCCESS,
+                        evidence.lockedAtWall, streamer.observationSequence + 1, lease.monitorGeneration,
+                        streamer.streamerMonitorGeneration, lease.fencingToken, "ban:$id", null, now))
+                }
+            }
+            streamerDao.bumpSourceDataVersion(now)
+        }
+        onApplied()
+        true
     }
 
     /**
@@ -227,7 +260,8 @@ class MonitorRepository @Inject constructor(
          * 而配置里的 `intervalSeconds` 可能只有 60 秒 —— 拿配置值去算，省电模式下会永远判 STALE。
          * 默认 0 = "调用方不知道周期"（不抬高阈值），行为与改动前逐字相同。
          */
-        expectedIntervalSeconds: Int = 0
+        expectedIntervalSeconds: Int = 0,
+        requestGeneration: Long
     ): ApplyObservationResult = db.withTransaction {
         val streamer = streamerDao.findActiveByStableId(observation.streamerStableId)
             ?: return@withTransaction ApplyObservationResult.Invalid("streamer_missing")
@@ -238,12 +272,10 @@ class MonitorRepository @Inject constructor(
         // 这里额外把"实际周期"传进去，否则省电模式下这一列会与界面说的是两回事。
         val confirmedAt = if (observation.result == ObservationResult.SUCCESS) now else streamer.lastConfirmedAt
         val freshness = freshnessOf(confirmedAt, now, expectedIntervalSeconds)
-        // ★ 缺陷 3：这里**不再**传 streamer.streamerMonitorGeneration 当 CAS 条件 ——
-        //   它就是在同一个事务里从这一行读出来的（上面那句 findActiveByStableId），
-        //   拿它当栅栏是恒真式。真正的保护链写在 StreamerDao.casConfirmedObservation 的注释里：
-        //   单调观察序号 + 租约（monitorGeneration + fencingToken + maintenanceMode）/ + monitoringEnabled = 1。
         val rows = streamerDao.casConfirmedObservation(
             streamerId = streamer.id,
+            requestGeneration = requestGeneration, requestUid = observation.uid,
+            elapsed = clock.nowElapsed(), bootId = clock.bootId(),
             newStatus = streamer.confirmedLiveStatus,
             observationResult = observation.result,
             observationSequence = observationSequence,
@@ -256,8 +288,11 @@ class MonitorRepository @Inject constructor(
         )
         if (rows == 0) return@withTransaction staleResult(streamer.id, observationSequence)
 
-        handleObservationSideEffects(streamer, observation.result, now, callFailure)
+        handleObservationSideEffects(streamer, observation.result, now, callFailure, expectedIntervalSeconds)
         if (observation.result == ObservationResult.SUCCESS) {
+            if (remote?.remoteLiveStatus == ConfirmedLiveStatus.LIVE && remote.remoteStatusValid) {
+                liveSessionDao.recordObservedLive(streamer.id, now)
+            }
             persistRemoteMetadata(streamer, remote, now)
             recordTitleChange(streamer, remote, now, policy, configVersion)
             recordAreaChange(streamer, remote, now, policy, configVersion)
@@ -312,7 +347,6 @@ class MonitorRepository @Inject constructor(
             ?: return@withTransaction ApplyObservationResult.Invalid("streamer_missing")
         val now = clock.nowWall()
 
-        val lastConfirmedAt = streamer.lastConfirmedAt
         val eventConfirmedAt = now
         // ★ 缺陷 3 的修复点：`monitoringEnabled = 1` 现在写在 CAS 的 WHERE 里
         //   （见 StreamerDao.casConfirmedObservation）。Tick 中途暂停某位主播（0.6.22 第 1 条）
@@ -320,6 +354,8 @@ class MonitorRepository @Inject constructor(
         //   staleResult 返回 StaleOrFenced，既不写状态、也不建/复活场次、更不发通知。
         val rows = streamerDao.casConfirmedObservation(
             streamerId = streamer.id,
+            requestGeneration = transition.streamerMonitorGeneration, requestUid = observation.uid,
+            elapsed = clock.nowElapsed(), bootId = clock.bootId(),
             newStatus = transition.to,
             observationResult = observation.result,
             observationSequence = observationSequence,
@@ -338,7 +374,7 @@ class MonitorRepository @Inject constructor(
         //   这段直播会从历史/统计/导出里静默消失（台账 H19）。
         //   因此信号必须穿透事务让 Room 回滚；回滚后下一 Tick 会重新走一次 LIVE 转换，
         //   届时 openNewSession 会发现已有 OPEN session 并复用（并发赢家创建的那条）。
-        handleObservationSideEffects(streamer, observation.result, now, callFailure)
+        handleObservationSideEffects(streamer, observation.result, now, callFailure, expectedIntervalSeconds)
         recordTitleChange(streamer, remote, now, policy, configVersion)
         recordAreaChange(streamer, remote, now, policy, configVersion)
 
@@ -389,26 +425,10 @@ class MonitorRepository @Inject constructor(
                         now = now,
                         expectedIntervalSeconds = expectedIntervalSeconds,
                         allowReuse = true
-                    )
-                val intervalId = activeInterval?.intervalId ?: Ids.stableId("itv")
-                if (activeInterval == null) {
-                    reliableIntervalDao.insert(
-                        intervalOf(intervalId, streamer, session?.stableId, now, observationSequence,
-                            monitorGeneration, fencingToken)
-                    )
-                } else {
-                    reliableIntervalDao.renewActive(intervalId, observationSequence, now)
-                }
-                if (session != null) {
-                    liveSessionDao.attachIntervalAndLiveMeta(
-                        id = session.id, intervalId = intervalId, at = now,
-                        title = remote?.roomTitle, area = areaLabel(remote), cover = remote?.coverUrl, now = now
-                    )
-                } else {
-                    openNewSession(streamer, remote, now)
-                }
+                    ) ?: openNewSession(streamer, remote, now)
+                attachLiveInterval(streamer, session, remote, activeInterval, now, observationSequence, monitorGeneration, fencingToken)
                 val reconfirmEvent = liveEventOf(
-                    streamer = streamer, sessionStableId = session?.stableId,
+                    streamer = streamer, sessionStableId = session.stableId,
                     type = LiveEventType.LIVE_RECONFIRMED, at = now,
                     eventSequence = eventSequence, observationSequence = observationSequence,
                     monitorGeneration = monitorGeneration, fencingToken = fencingToken,
@@ -418,7 +438,7 @@ class MonitorRepository @Inject constructor(
                 committedStatus = ConfirmedLiveStatus.LIVE
                 // 异常恢复后重新确认 LIVE：产生"正在直播"通知（0.6.5 / 233）。
                 createStartNotification(
-                    reconfirmEvent, streamer, remote, session?.stableId,
+                    reconfirmEvent, streamer, remote, session.stableId,
                     policy, configVersion,
                     com.example.bilimonitor.data.local.NotificationEventType.LIVE_RECONFIRMED
                 )
@@ -427,10 +447,9 @@ class MonitorRepository @Inject constructor(
             transition.to == ConfirmedLiveStatus.LIVE && transition.from != ConfirmedLiveStatus.LIVE -> {
                 // 开播确认：创建/复用 ACTIVE OPEN Session（0.6.5 / 0.6.22）。
                 val existing = liveSessionDao.findActiveOpenSession(streamer.id)
-                var sessionStableId: String?
-                var sessionId: Long
+                val session: LiveSessionEntity
                 if (existing != null) {
-                    sessionStableId = existing.stableId; sessionId = existing.id
+                    session = existing
                     // ★ 缺陷 2：并存的 ABANDONED OPEN（历史遗留 —— 暂停后新建场次造成的那种重叠）
                     //   必须在转换前先关掉：它不可能是"当前场次"（ACTIVE 那条才是），
                     //   但 endTime IS NULL 会让它永远悬着，并与本场次的区间重叠。
@@ -468,10 +487,10 @@ class MonitorRepository @Inject constructor(
                             com.example.bilimonitor.data.local.TransitionReason.FIRST_OBSERVATION
                     )
                     if (reused != null) {
-                        sessionStableId = reused.stableId; sessionId = reused.id
+                        session = reused
                     } else {
                         val created = openNewSession(streamer, remote, now)
-                        sessionStableId = created.stableId; sessionId = created.id
+                        session = created
                     }
                 }
                 // 区间插入必须复用已有的 ACTIVE 区间。
@@ -479,19 +498,8 @@ class MonitorRepository @Inject constructor(
                 // 因此 ROUND → LIVE 时旧区间仍是 ACTIVE；若无条件再插一条，
                 // 会违反部分唯一索引 idx_interval_one_active（ON CONFLICT ABORT），
                 // 整个事务回滚 → 主播**永久卡在 ROUND**，每个 Tick 失败并写一条错误日志。
-                val intervalId = activeInterval?.intervalId ?: Ids.stableId("itv")
-                if (activeInterval == null) {
-                    reliableIntervalDao.insert(
-                        intervalOf(intervalId, streamer, sessionStableId, now, observationSequence,
-                            monitorGeneration, fencingToken)
-                    )
-                } else {
-                    reliableIntervalDao.renewActive(intervalId, observationSequence, now)
-                }
-                liveSessionDao.attachIntervalAndLiveMeta(
-                    id = sessionId, intervalId = intervalId, at = now,
-                    title = remote?.roomTitle, area = areaLabel(remote), cover = remote?.coverUrl, now = now
-                )
+                attachLiveInterval(streamer, session, remote, activeInterval, now, observationSequence, monitorGeneration, fencingToken)
+                val sessionStableId = session.stableId
                 streamerDao.noteLiveStarted(streamer.id, now, now)
                 // 普通首次确认不产生 START 通知（0.6.5）；正式确认才创建 START 事件与通知。
                 if (transition.reason != com.example.bilimonitor.data.local.TransitionReason.FIRST_OBSERVATION &&
@@ -517,18 +525,18 @@ class MonitorRepository @Inject constructor(
             (transition.to == ConfirmedLiveStatus.OFFLINE ||
                 transition.to == ConfirmedLiveStatus.ROUND) -> {
                 // 下播确认：关播通知资格 = 当前区间 ACTIVE（0.2 / 0.6.6）。
-                val wasIntervalActive = activeInterval != null &&
-                    activeInterval.streamerMonitorGeneration == streamer.streamerMonitorGeneration
                 val open = liveSessionDao.findActiveOpenSession(streamer.id)
+                val wasIntervalActive = activeInterval != null && open != null && activeInterval.sessionStableId == open.stableId &&
+                    activeInterval.streamerMonitorGeneration == streamer.streamerMonitorGeneration
                 reliableIntervalDao.closeActiveByStreamer(
                     streamer.stableId, ReliableIntervalInvalidReason.SESSION_CLOSED, now
                 )
                 if (open != null) {
-                    // 关闭口径（断档截断的判据、锚点为什么必须用 lastConfirmedAt、
+                    // 关闭口径（断档截断的判据、锚点为什么必须用最后在播证据、
                     // endConfidence 为什么是 PROVISIONAL）全部写在 [closeOpenSessionAsObserved] 里，
                     // ACTIVE 关播与 ABANDONED OPEN 补结束**共用同一个实现**，口径不可能分叉。
                     val outcome = closeOpenSessionAsObserved(
-                        streamer = streamer, session = open, now = now,
+                        session = open, now = now, continuouslyObserved = wasIntervalActive,
                         expectedIntervalSeconds = expectedIntervalSeconds
                     )
                     if (outcome.rows > 0 && outcome.interrupted) {
@@ -635,8 +643,13 @@ class MonitorRepository @Inject constructor(
          * 本次失败的**结构化原始信号**（HTTP 状态码 / 业务 code / message / 限流头）。
          * 为空表示"引擎没拿到更具体的信号"（例如熔断期间未发请求的兜底路径）。
          */
-        callFailure: com.example.bilimonitor.domain.policy.CallFailure? = null
+        callFailure: com.example.bilimonitor.domain.policy.CallFailure? = null,
+        expectedIntervalSeconds: Int
     ) {
+        val previousSuccess = streamer.lastConfirmedAt
+        if (previousSuccess != null && truncatedEndTime(now, previousSuccess, expectedIntervalSeconds) != now) {
+            reliableIntervalDao.invalidateActiveByStreamer(streamer.stableId, ReliableIntervalInvalidReason.MONITORING_GAP, previousSuccess)
+        }
         if (result == ObservationResult.SUCCESS) {
             // ★ 恢复正常 = 边沿触发的"下降沿"：清掉这位主播的失败留痕抑制器，
             //   下次再失败（哪怕原因完全相同）重新记一条（缺陷 3）。
@@ -867,7 +880,6 @@ class MonitorRepository @Inject constructor(
         runCatching {
             streamerDao.updateRemoteMetadata(
                 streamerId = streamer.id,
-                name = remote.name,
                 avatarUrl = remote.avatarUrl,
                 roomTitle = remote.roomTitle,
                 parentAreaName = remote.parentAreaName,
@@ -996,11 +1008,7 @@ class MonitorRepository @Inject constructor(
      *   并污染历史、统计、导出与备份。判据见 [truncatedEndTime]（抽成纯函数以便单测）。
      *   `confirmedOfflineAt` 仍记 now（那是我们真正确认下播的时间；对 ABANDONED 的补结束路径
      *   则是"本次可靠确认的时刻"），endConfidence 保持 PROVISIONAL —— 截断值是推断，不是观测。
-     *   ★ 锚点必须用 lastConfirmedAt（= 最后一次**成功**观察），不能用 lastCheckedAt ——
-     *   后者在失败观察时也会推进（`casConfirmedObservation` 无条件写 observedAt），
-     *   于是"重启后先失败一次、再成功观察到下播"会让间隔看起来只有 1 分钟、
-     *   截断不触发，13 小时假场次照样产生（第二轮审查给出的反例）。
-     *   lastConfirmedAt 为 null（从未成功确认）时退回 lastCheckedAt。
+     *   场次的最后在播证据独立于检查新鲜度；连续下播确认不会推进它。
      *
      * @param endTimeUpperBound 结束时刻的上界（可空）：同一主播**下一条**场次的开播时刻。
      *   同一时刻只可能有一场直播，所以待关闭场次的 endTime 不可能晚于它 ——
@@ -1008,14 +1016,14 @@ class MonitorRepository @Inject constructor(
      *   反而制造出新的重叠区间与假时长。只在确实存在下一条场次时传入。
      */
     private suspend fun closeOpenSessionAsObserved(
-        streamer: StreamerEntity,
         session: LiveSessionEntity,
         now: Long,
         expectedIntervalSeconds: Int,
-        endTimeUpperBound: Long? = null
+        endTimeUpperBound: Long? = null,
+        continuouslyObserved: Boolean = false, reason: String? = null
     ): CloseOutcome {
-        val lastSeen = streamer.lastConfirmedAt ?: streamer.lastCheckedAt
-        val truncated = truncatedEndTime(now, lastSeen, expectedIntervalSeconds)
+        val lastSeen = session.lastConfirmedLiveAt ?: session.startTime
+        val truncated = if (continuouslyObserved) now else truncatedEndTime(now, lastSeen, expectedIntervalSeconds)
         val effectiveEnd = endTimeUpperBound?.let { minOf(it, truncated) } ?: truncated
         val interrupted = effectiveEnd != now
         val duration = session.startTime?.let { ((effectiveEnd - it) / 1000).coerceAtLeast(0) }
@@ -1026,7 +1034,7 @@ class MonitorRepository @Inject constructor(
             durationConfidence = if (duration != null) DataConfidence.PROVISIONAL else null,
             confirmedOfflineAt = now,
             endTimeZone = clock.currentTimeZone(),
-            expectedCorrectionVersion = session.correctionVersion, updatedAt = now
+            expectedCorrectionVersion = session.correctionVersion, updatedAt = now, reason = reason
         )
         return CloseOutcome(rows = rows, endTime = effectiveEnd, lastSeen = lastSeen, interrupted = interrupted)
     }
@@ -1118,7 +1126,7 @@ class MonitorRepository @Inject constructor(
         endTimeUpperBound: Long?
     ): Int {
         val outcome = closeOpenSessionAsObserved(
-            streamer = streamer, session = abandoned, now = now,
+            session = abandoned, now = now,
             expectedIntervalSeconds = expectedIntervalSeconds,
             endTimeUpperBound = endTimeUpperBound
         )
@@ -1180,8 +1188,8 @@ class MonitorRepository @Inject constructor(
             startTimeZone = clock.currentTimeZone()
         )
         streamerDao.bumpSourceDataVersion(now)
-        try {
-            liveSessionDao.insert(session)
+        return try {
+            session.copy(id = liveSessionDao.insert(session))
         } catch (e: SQLiteConstraintException) {
             // 并发路径已创建 ACTIVE OPEN Session（0.6.15）：**这里就重读并复用**，
             // 而不是把信号丢给调用方 —— 调用方如果"捕获后正常返回"，Room 会提交半截事务
@@ -1197,11 +1205,28 @@ class MonitorRepository @Inject constructor(
             }
             throw DuplicateOpenSessionSignal
         }
-        return session
     }
 
     /** 用于在事务内中止并映射为 DuplicateOpenSession 的信号。 */
     object DuplicateOpenSessionSignal : Exception("duplicate_active_open_session")
+
+    private suspend fun attachLiveInterval(
+        streamer: StreamerEntity, session: LiveSessionEntity, remote: RemoteLiveRoom?,
+        active: ReliableMonitorIntervalEntity?, now: Long, sequence: Long, generation: Long, fence: String
+    ) {
+        val intervalId = if (active != null && active.sessionStableId == session.stableId &&
+            active.streamerMonitorGeneration == streamer.streamerMonitorGeneration) {
+            check(reliableIntervalDao.renewActive(active.intervalId, sequence, now) == 1)
+            active.intervalId
+        } else {
+            if (active != null) reliableIntervalDao.invalidateActiveByStreamer(streamer.stableId, ReliableIntervalInvalidReason.GENERATION_CHANGED, now)
+            val created = Ids.stableId("itv")
+            reliableIntervalDao.insert(intervalOf(created, streamer, session.stableId, now, sequence, generation, fence))
+            created
+        }
+        check(liveSessionDao.attachIntervalAndLiveMeta(session.id, intervalId, now,
+            remote?.roomTitle, areaLabel(remote), remote?.coverUrl, now) == 1)
+    }
 
     private fun intervalOf(
         intervalId: String,

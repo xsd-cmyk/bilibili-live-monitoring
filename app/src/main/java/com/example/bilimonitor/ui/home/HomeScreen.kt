@@ -1,5 +1,9 @@
 ﻿package com.example.bilimonitor.ui.home
 
+import com.example.bilimonitor.ui.common.GlassInfoPanel
+import com.example.bilimonitor.ui.common.AppAlertDialog
+import com.example.bilimonitor.ui.nav.DefaultDockClearance
+import com.example.bilimonitor.ui.nav.LocalDockClearance
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -29,8 +33,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarOutline
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -50,7 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -106,21 +109,18 @@ fun HomeScreen(
      *   而它每 30 秒只做一次 `Long` 赋值 —— 真正会重组的是读取了它的那部分作用域，
      *   且卡片是按 `freshnessRow` **等值**跳过的（文案没变就不会重组）。
      */
-    val now by produceState(
-        initialValue = com.example.bilimonitor.core.AppClocks.nowWall(),
-        key1 = Unit
-    ) {
+    var now by remember { mutableLongStateOf(com.example.bilimonitor.core.AppClocks.nowWall()) }
+    LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(DataExpiryTickMillis)
-            value = com.example.bilimonitor.core.AppClocks.nowWall()
+            now = com.example.bilimonitor.core.AppClocks.nowWall()
         }
     }
-    // 底部导航占掉多高不是一个定值：悬浮 Dock 和贴底整条差别很大，见文件末尾的常量说明。
     val bottomBarClearance =
         if (navigationStyle == com.example.bilimonitor.data.repository.NavigationStyle.NORMAL) {
             BottomBarClearanceNormal
         } else {
-            BottomBarClearanceDock
+            LocalDockClearance.current ?: DefaultDockClearance
         }
     var showAddDialog by remember { mutableStateOf(false) }
     var showBatchDeleteDialog by remember { mutableStateOf(false) }
@@ -237,32 +237,34 @@ fun HomeScreen(
                         val selectedTagLabel = selectedTagNames.joinToString("、")
                         val selectedGroupName = state.groups
                             .firstOrNull { it.id == state.groupFilterId }?.name
-                        Text(
-                            text = when {
-                                // 标签多选取的是**交集**（用户定稿），于是"点第二个标签"经常直接把
-                                // 列表筛空 —— 用户看到空列表的第一反应是"筛选坏了"。
-                                // 所以这一种空态必须自己把原因说出来（"同时具备"），并把被它排除掉的
-                                // 每个标签名都列全；有分组时一并交代（分组 ∧ 标签同属 AND）。
-                                selectedTagNames.size >= 2 && selectedGroupName != null ->
-                                    "分组「$selectedGroupName」下没有同时具备「$selectedTagLabel」的主播"
-                                selectedTagNames.size >= 2 ->
-                                    "没有同时具备「$selectedTagLabel」的主播"
-                                state.query.isNotBlank() -> "没有匹配「${state.query}」的主播"
-                                // 只选一个标签时不存在"同时具备几个"的问题，沿用原来的措辞；
-                                // 但若同时有分组，把分组也写进去，否则用户会以为分组没生效。
-                                selectedTagNames.size == 1 && selectedGroupName != null ->
-                                    "分组「$selectedGroupName」下没有标签「$selectedTagLabel」的主播"
-                                selectedTagNames.size == 1 -> "该标签下还没有主播"
-                                state.groupFilterId != null -> "该分组下还没有主播"
-                                state.filter == HomeFilter.FAVORITE ->
-                                    "还没有收藏的主播\n点卡片右侧的星标即可收藏"
-                                state.filter == HomeFilter.LIVE -> "当前没有正在直播的主播"
-                                state.filter == HomeFilter.OFFLINE -> "没有未开播的主播"
-                                else -> "还没有主播，点击 + 添加\n支持 UID、直播间链接"
-                            },
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        GlassInfoPanel {
+                            Text(
+                                text = when {
+                                    // 标签多选取的是**交集**（用户定稿），于是"点第二个标签"经常直接把
+                                    // 列表筛空 —— 用户看到空列表的第一反应是"筛选坏了"。
+                                    // 所以这一种空态必须自己把原因说出来（"同时具备"），并把被它排除掉的
+                                    // 每个标签名都列全；有分组时一并交代（分组 ∧ 标签同属 AND）。
+                                    selectedTagNames.size >= 2 && selectedGroupName != null ->
+                                        "分组「$selectedGroupName」下没有同时具备「$selectedTagLabel」的主播"
+                                    selectedTagNames.size >= 2 ->
+                                        "没有同时具备「$selectedTagLabel」的主播"
+                                    state.query.isNotBlank() -> "没有匹配「${state.query}」的主播"
+                                    // 只选一个标签时不存在"同时具备几个"的问题，沿用原来的措辞；
+                                    // 但若同时有分组，把分组也写进去，否则用户会以为分组没生效。
+                                    selectedTagNames.size == 1 && selectedGroupName != null ->
+                                        "分组「$selectedGroupName」下没有标签「$selectedTagLabel」的主播"
+                                    selectedTagNames.size == 1 -> "该标签下还没有主播"
+                                    state.groupFilterId != null -> "该分组下还没有主播"
+                                    state.filter == HomeFilter.FAVORITE ->
+                                        "还没有收藏的主播\n点卡片右侧的星标即可收藏"
+                                    state.filter == HomeFilter.LIVE -> "当前没有正在直播的主播"
+                                    state.filter == HomeFilter.OFFLINE -> "没有未开播的主播"
+                                    else -> "还没有主播，点击 + 添加\n支持 UID、直播间链接"
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             } else {
@@ -353,7 +355,7 @@ fun HomeScreen(
                     .padding(start = 16.dp, end = 88.dp, bottom = bottomBarClearance),
                 contentAlignment = Alignment.Center
             ) {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.inverseSurface)) {
+                AppCard(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.inverseSurface)) {
                     Text(
                         message, Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                         color = MaterialTheme.colorScheme.inverseOnSurface
@@ -376,7 +378,7 @@ fun HomeScreen(
     // 批量删除的二次确认（与详情页单条删除同一风格）：
     // 一次会影响多位主播，误触代价比单条更大，所以动作与"取消"并列而非直接执行。
     if (showBatchDeleteDialog) {
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { showBatchDeleteDialog = false },
             title = { Text("删除选中的主播？") },
             text = {
@@ -400,7 +402,7 @@ fun HomeScreen(
 
 @Composable
 private fun HealthBanner(text: String, onClick: (() -> Unit)?) {
-    Card(
+    AppCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -446,7 +448,7 @@ private fun StreamerCard(
     onLongClick: () -> Unit = {},
     onToggleFavorite: () -> Unit
 ) {
-    Card(
+    AppCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -611,7 +613,7 @@ private fun AddStreamerDialog(
     var text by remember { mutableStateOf("") }
     // 默认按房间号识别：用户手上通常是直播间地址或房间号。
     var mode by remember { mutableStateOf(InputMode.ROOM) }
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("添加主播") },
         text = {
@@ -687,6 +689,7 @@ private fun statusColor(status: ConfirmedLiveStatus, banned: Boolean): Color =
         ConfirmedLiveStatus.UNKNOWN -> StatusColors.Unknown
     }
 
+private val fullTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 private val timeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
 /**
@@ -727,7 +730,7 @@ fun formatTime(epochMillis: Long?, zoneId: ZoneId? = null): String {
     if (epochMillis == null) return "—"
     val zone = zoneId ?: ZoneId.systemDefault()
     return Instant.ofEpochMilli(epochMillis).atZone(zone)
-        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        .format(fullTimeFormatter)
 }
 
 /**
@@ -752,35 +755,9 @@ fun formatDuration(seconds: Long?): String {
 }
 
 /**
- * 悬浮 Dock 样式下，底部导航在内容之上占掉的高度 —— FAB、消息条、列表末端留白都要避让它。
- *
- * 组成（Dock 是浮层，下面这 124dp 全部压在内容之上）：
- *   26dp  栏体下沿与屏幕底部的浮动留白（AppNavHost 里 Dock 自己的 `padding(vertical = 26.dp)`）
- *  +72dp  栏体本身：
- *           图标 24 + 上下各 3dp = 30
- *           图标与文字之间 2
- *           文字约 16（labelSmall 的 lineHeight）
- *           → 每项内容 48，加选项 Column 的上下各 6dp = 60
- *           → 再加外层 Row 的上下各 6dp = 72
- *  +26dp  栏体上沿的浮动留白
- *  =124dp，再加 12dp 视觉间隙 → 136dp。
- *
- * 系统栏（导航键 / 手势条）余量**故意不写进这个数**：Dock 自带 navigationBarsPadding、
- * 上面浮层也加了同一个 padding，两者已经共享同一条基准线，再算一次就是双重留白。
- *
- * 取舍：栏体那 72dp 只能照 Dock 的内部尺寸估算（跨文件测量会把首页和导航栏耦死，
- * 而这一版不允许改 Dock 所在文件），而且它随系统字体放大而变化 —— 超大字号下仍可能压住
- * 一点点。Dock 内部尺寸一变，这个常量必须跟着改。
- */
-private val BottomBarClearanceDock = 136.dp
-
-/**
  * 贴底整条样式（NORMAL）下需要避让的高度：material3 1.3.1 的 NavigationBar 高度取自
  * `NavigationBarTokens.ContainerHeight = 80dp`，再加上 12dp 视觉间隙 → 92dp
  * （NavigationBar 自带 systemBars 的 windowInsets，系统栏余量同样不重复计）。
- *
- * 之前不管哪种样式都抬 96dp（照 Dock 调的魔数）：切到 NORMAL 时 FAB 会悬在栏体上方一大截，
- * 出现肉眼可见的断层；而浮层样式下 96dp 又不够 —— Dock 实际占到 124dp，FAB 会压进栏体里。
  */
 private val BottomBarClearanceNormal = 92.dp
 

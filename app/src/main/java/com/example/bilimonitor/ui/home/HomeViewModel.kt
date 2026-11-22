@@ -17,12 +17,14 @@ import com.example.bilimonitor.data.repository.StreamerRepository
 import com.example.bilimonitor.data.repository.TagWithCount
 import com.example.bilimonitor.domain.policy.RoomBanCodec
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
@@ -263,23 +265,13 @@ class HomeViewModel @Inject constructor(
                 groupId != null -> streamerRepository.observeByGroup(groupId, q)
                 else -> streamerRepository.observeStreamers(q)
             }
-            base.combine(configRepository.getConfigFlow()) { list, _ -> f to list }
+            base.map { projectHomeRows(f, it) }.flowOn(Dispatchers.Default)
         }
-        .combine(healthRepository.observeHealth()) { (f, list), health ->
-            Triple(f, list, health)
+        .onEach { visible ->
+            pruneSelection(visible.ids)
+            reloadStreamerTags(visible.rows)
         }
-        // 新的可见列表一到，就把选中集合收敛到可见范围。
-        // 不收敛的后果是有数据损失面的：勾选 3 位后切到"收藏"（只剩 1 位可见），
-        // 标题仍写"已选 3 位"，批量删除/暂停/收藏会连带操作两位用户已经看不见的主播。
-        // 收敛点选在这里而不是 uiState 的 combine 里：这里已经拿到"新的可见列表"，
-        // 可以一次到位；写进 combine 的变换里等于给纯函数塞副作用，而且要晚一帧。
-        .onEach { (f, list, _) ->
-            pruneSelection(f, list)
-            // 卡片上的标签跟着"当前可见的这批主播"走：筛选/搜索一变可见集合就变，
-            // 必须按新集合重取一次（一次 IN 查询，见 [reloadStreamerTags]）。
-            // 不重取的后果是上一批人的标签留在新列表上，卡片出现张冠李戴的标签。
-            reloadStreamerTags(list.filter { f.matches(it) })
-        }
+        .combine(healthRepository.observeHealth()) { visible, health -> visible to health }
 
     private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -291,52 +283,24 @@ class HomeViewModel @Inject constructor(
         // 第 5 路本来就把"标签目录 + 分组目录"打包成一个值传进来，卡片的标签映射搭同一班车：
         // 具名 combine 的重载到 5 路为止，再开一路既没地方放、也没必要。
         combine(tags, groups, streamerTags) { t, g, byStreamer -> Triple(t, g, byStreamer) }
-    ) { (f, list, health), config, msg, sel, taxonomy ->
+    ) { (visible, health), config, msg, sel, taxonomy ->
         val (tagList, groupList, streamerTagsByStreamer) = taxonomy
-        // 排序：直播中置顶 → 轮播 → 未开播 → 待确认；同组内收藏优先、按名字排序
-        fun statusPriority(s: StreamerEntity): Int = when (s.confirmedLiveStatus) {
-            ConfirmedLiveStatus.LIVE -> 0
-            ConfirmedLiveStatus.ROUND -> 1
-            ConfirmedLiveStatus.OFFLINE -> 2
-            ConfirmedLiveStatus.UNKNOWN -> 3
-        }
-        val sorted = list.sortedWith(
-            compareBy(
-                { statusPriority(it) },
-                { !it.isFavorite },
-                { it.name }
-            )
-        )
-        // 直播中筛选只包含真正在直播的主播（轮播不算）；
-        // 轮播归入"未开播"（对观众而言轮播不是真直播）。判定规则见 [matches]。
-        val filtered = sorted.filter { f.matches(it) }
-        // 输出侧再求一次交集：pruneSelection 是"列表到达 → 写回选中"的异步一步，
-        // 极端时序下 sel 可能还没收敛。而这里出去的 selectedIds 同时决定了标题里的
-        // "已选 N 位"、多选模式判定和批量操作的目标，必须是裁剪后的那一份。
-        val visibleIds = filtered.mapTo(HashSet<Long>()) { it.id }
-        // 「封禁中」标记：在**这里**（映射层）解一次，界面只拿布尔值。
-        // 只对**当前可见**的这批主播解，与 [HomeUiState.streamerTags] 同一口径：
-        // 卡片永远拿不到"看不见的那批人"的标记。`isBanned` 的"解不出来就是没封禁"
-        // 保证一段普通错误文本不会被算成封禁（封禁标记 = `lastError` 里的 `ROOM_BANNED ` 前缀）。
-        val bannedIds = filtered
-            .filter { RoomBanCodec.isBanned(it.lastError) }
-            .mapTo(HashSet<Long>()) { it.id }
         HomeUiState(
             // 走到这一行说明列表与配置都已经产出过数据，"首帧加载"结束
             loading = false,
             query = query.value,
-            filter = f,
-            streamers = filtered,
+            filter = visible.filter,
+            streamers = visible.rows,
             config = config,
             health = health,
             message = msg,
-            selectedIds = sel intersect visibleIds,
+            selectedIds = sel intersect visible.ids,
             tags = tagList,
             tagFilterIds = tagFilterIds.value,
             groups = groupList,
             groupFilterId = groupFilterId.value,
             streamerTags = streamerTagsByStreamer,
-            bannedIds = bannedIds
+            bannedIds = visible.bannedIds
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
@@ -398,15 +362,12 @@ class HomeViewModel @Inject constructor(
      *
      * - 幂等：[Set.intersect] 满足 A ∩ V ∩ V = A ∩ V，且 MutableStateFlow 丢弃相等的新值，
      *   所以这次写回最多再引起一轮 uiState 重组就稳定，不会自激成死循环。
-     * - 不额外查库：可见列表就是列表流这次吐出来的结果，只是重新过一遍同一个筛选规则。
+     * - 不额外查库：可见列表就是列表流这次吐出来的结果，复用列表投影生成的 id 集合。
      */
-    private fun pruneSelection(f: HomeFilter, list: List<StreamerEntity>) {
+    private fun pruneSelection(visibleIds: Set<Long>) {
         val current = selectedIds.value
         if (current.isEmpty()) return
-        val kept = current intersect list.asSequence()
-            .filter { f.matches(it) }
-            .map { it.id }
-            .toHashSet()
+        val kept = current intersect visibleIds
         if (kept.size != current.size) selectedIds.value = kept
     }
 
@@ -612,15 +573,30 @@ class HomeViewModel @Inject constructor(
     }
 }
 
-/**
- * 状态筛选的判定规则。
- *
- * 抽出来是因为它有两个消费方：列表展示（[HomeViewModel.uiState]）与选中集合裁剪
- * （[HomeViewModel.pruneSelection]）。两处各写一份 when 迟早会漂移，而漂移的表现
- * 就是"看得见的选不上、选中的看不见"。
- *
- * 直播中只包含真正在直播的主播（轮播不算）；轮播归入"未开播"—— 对观众而言轮播不是真直播。
- */
+internal data class VisibleHomeRows(
+    val filter: HomeFilter, val rows: List<StreamerEntity>, val ids: Set<Long>, val bannedIds: Set<Long>
+)
+
+private val homeOrder = compareBy<StreamerEntity>(
+    { when (it.confirmedLiveStatus) {
+        ConfirmedLiveStatus.LIVE -> 0
+        ConfirmedLiveStatus.ROUND -> 1
+        ConfirmedLiveStatus.OFFLINE -> 2
+        ConfirmedLiveStatus.UNKNOWN -> 3
+    } }, { !it.isFavorite }, { it.name }
+)
+
+internal fun projectHomeRows(filter: HomeFilter, source: List<StreamerEntity>): VisibleHomeRows {
+    val rows = source.filter { filter.matches(it) }.sortedWith(homeOrder)
+    val ids = HashSet<Long>(rows.size)
+    val banned = HashSet<Long>()
+    for (row in rows) {
+        ids.add(row.id)
+        if (RoomBanCodec.isBanned(row.lastError)) banned.add(row.id)
+    }
+    return VisibleHomeRows(filter, rows, ids, banned)
+}
+
 private fun HomeFilter.matches(streamer: StreamerEntity): Boolean = when (this) {
     HomeFilter.ALL -> true
     HomeFilter.LIVE -> streamer.confirmedLiveStatus == ConfirmedLiveStatus.LIVE

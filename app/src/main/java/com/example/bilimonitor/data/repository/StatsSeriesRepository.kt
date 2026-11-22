@@ -76,10 +76,8 @@ class StatsSeriesRepository @Inject constructor(
     // 一级页面的汇总现在由 StatsListScreen 自己的 combine 管线算（见 StatsListScreen:145）。
     // 数据类 StreamerStatsSummary 仍在使用，保留。
 
-    suspend fun allBucketValues(g: StatsGranularity): List<String> {
-        val sessions = liveSessionDao.listAll().filter { it.endTime != null }
-        return sessions.map { bucketKeyOf(it, g) }.distinct().sortedDescending()
-    }
+    suspend fun allBucketValues(streamerId: Long, g: StatsGranularity): List<String> =
+        liveSessionDao.closedBucketTimes(streamerId).map { bucketKeyOf(it, g) }.distinct().sortedDescending()
 
     /** 桶值 → 区间 [start, end)。 */
     private fun boundsOf(startDay: LocalDate, endDayExclusive: LocalDate): Pair<Long, Long> =
@@ -237,13 +235,9 @@ class StatsSeriesRepository @Inject constructor(
         //    现在改为真的去数"区间内未结束"的场次。
         //  - reliableMonitoredSeconds：开播或关播可信度为 CORRECTED（人工修正）的场次时长之和。
         val excluded = liveSessionDao.countUnclosedForStreamerBetween(streamerId, start, end)
-        val reliableSeconds = sessions
-            .filter {
-                it.startConfidence == com.example.bilimonitor.data.local.DataConfidence.CORRECTED ||
-                    it.endConfidence == com.example.bilimonitor.data.local.DataConfidence.CORRECTED
-            }
-            .sumOf { it.durationSeconds ?: 0L }
-
+        val reliableSeconds = com.example.bilimonitor.domain.policy.ReliableCoverage.seconds(
+            liveSessionDao.loadCoverage(sessions, start, end)
+        )
         val totals = StatsTotals(
             sessionCount = sessions.size.toLong(),
             confirmedSessionCount = sessions.count { it.startConfidence == com.example.bilimonitor.data.local.DataConfidence.CONFIRMED }.toLong(),
@@ -282,13 +276,6 @@ class StatsSeriesRepository @Inject constructor(
             (1..days).map { it.toString() }
         }
         StatsGranularity.YEAR -> (1..12).map { "${it}月" }
-    }
-
-    private fun bucketKeyOf(session: com.example.bilimonitor.data.local.entity.LiveSessionEntity, g: StatsGranularity): String {
-        // 与统计口径一致：用开播时间归属周期（原先用 endTime，会让 23:50 开播的场次
-        // 在"可选周期"列表里落到第二天，而它的时长却算在第一天）。
-        val t = session.startTime ?: session.endTime ?: session.createdAt
-        return bucketKeyOf(t, g)
     }
 
     private fun bucketKeyOf(epochMillis: Long, g: StatsGranularity): String {

@@ -1,0 +1,38 @@
+设备验收摘录 · 2026-11-20 · 工作树 b147c69c32bc + 本地变更
+BiliMonitor_Test（只读模拟器），Android 15 / API 35 / x86_64
+来源：connected 结果 XML、AndroidJUnitRunner 状态行、覆盖安装时的 adb/SQLite 回读、UIAutomator 读数。只保留下列验收行；随机测试实体 ID 已替换。
+
+原设备套件：tests=39 failures=0 errors=0 skipped=0
+定向用例（应有行为断言）：
+FAIL  auditCancelledRestoreStaysCancelled : java.lang.AssertionError: expected:<CANCELLED> but was:<COMPLETED>
+FAIL  auditFreshObservationAfterWallRollback : org.junit.ComparisonFailure: a fresh confirmation must release a still-valid notification expected:<[Ready]> but was:<[AwaitObservation]>
+FAIL  auditFreshSessionReferencesInterval : java.lang.AssertionError: new session references the actual interval expected:<<测试ID>> but was:<null>
+FAIL  auditGapEndsAtLastKnownLiveWithTwoConfirmations : java.lang.AssertionError: seconds added after the last observed LIVE expected:<0> but was:<14520>
+FAIL  auditManualDurationIsNotMonitoredCoverage : java.lang.AssertionError: expected:<0> but was:<3600>
+FAIL  auditNotePreservesAreaTimeline : java.lang.AssertionError: expected:<[A, B]> but was:<[A]>
+FAIL  auditPausedGenerationRejectsOldResponse : org.junit.ComparisonFailure: status/sessions/generation expected:<[OFFLINE/0]/3> but was:<[LIVE/1]/3>
+FAIL  auditRecoveredSessionOwnsEvent : java.lang.AssertionError: expected:<[<测试ID>, <测试ID>]> but was:<[null, null]>
+FAIL  auditSkipDoesNotChangeAnotherUidPolicy : java.lang.AssertionError: policy on skipped local UID expected:<false> but was:<true>
+FAIL  auditStatsSelectsThisStreamersLatestDay : java.lang.AssertionError: default period on a single streamer's stats screen expected:<1> but was:<0>
+FAIL  auditUndecidedRestoreDoesNotCommit : java.lang.AssertionError: expected:<WAITING_DECISIONS> but was:<COMPLETED>
+PASS  auditAvailableSchemaMatrix
+Tests run: 12,  Failures: 11
+
+同签名覆盖安装与 SQLite 回读（v12 APK 来自 b147c69，不是用空库冒充覆盖升级）：
+Before migration: user_version=12
+Install current over old: Performing Streamed Install
+db|13
+audit-kept|1|8|NULL
+24|1
+partial_indices|16
+fk_errors|0
+Equal-version rollback install (without -d): Performing Streamed Install
+After reinstall current: 13
+audit-kept
+旧包反向覆盖：ADB 返回 Success；Room：A migration from 13 to 12 was required but not found.
+
+拒绝通知权限，确认“不启用保活”后，SQLite 回读：
+POWER_SAVING|NO_GUARANTEE
+历史 → 搜索主播名字 / audit-kept / 最近：— / 查看 › / 直播历史 / 排序 / 导出 / 主播 / 历史 / 统计 / 设置
+统计 → 搜索主播名字 / audit-kept / 最近：— / 0 场 / — / 统计 / 排序 / 导出 / 主播 / 历史 / 统计 / 设置
+设置 → 监控 / 开启监控 / 关闭后不再检查直播状态 / 运行模式 / 实时监控（前台服务，锁屏实时会增加耗电） / 省电监控（系统调度，约 15 分钟以上） / 手动（仅打开 App 时检查） / 检查间隔（秒，30–3600） / 60 / 保存 / 开播确认次数：1（默认 1，立即通知） / − / 1

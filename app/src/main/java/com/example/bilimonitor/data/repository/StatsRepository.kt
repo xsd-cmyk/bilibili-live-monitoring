@@ -110,6 +110,8 @@ class StatsRepository @Inject constructor(
             startOk
         }
 
+        val coverage = db.liveSessionDao().loadCoverage(eligible, query.rangeStartInclusive, query.rangeEndExclusive)
+            .groupBy { it.sessionStableId }
         fun totalsOf(list: List<LiveSessionEntity>): StatsTotals = StatsTotals(
             sessionCount = list.size.toLong(),
             confirmedSessionCount = list.count { it.startConfidence == DataConfidence.CONFIRMED }.toLong(),
@@ -117,9 +119,9 @@ class StatsRepository @Inject constructor(
             correctedSessionCount = list.count { it.startConfidence == DataConfidence.CORRECTED }.toLong(),
             excludedSessionCount = (sessions.size - list.size).toLong(),
             monitoredSeconds = list.sumOf { it.durationSeconds ?: 0L },
-            reliableMonitoredSeconds = list
-                .filter { it.startConfidence == DataConfidence.CORRECTED || it.endConfidence == DataConfidence.CORRECTED }
-                .sumOf { it.durationSeconds ?: 0L }
+            reliableMonitoredSeconds = com.example.bilimonitor.domain.policy.ReliableCoverage.seconds(
+                list.flatMap { coverage[it.stableId].orEmpty() }
+            )
         )
 
         val totals = totalsOf(eligible)
@@ -212,7 +214,7 @@ class StatsRepository @Inject constructor(
     }
 
     private fun fingerprintOf(query: StatsQuery, sdv: Long): String =
-        "{\"eligibility\":\"${query.eligibility.name}\"," +
+        "{\"coverageVersion\":2,\"eligibility\":\"${query.eligibility.name}\"," +
             "\"rangeEndExclusive\":${query.rangeEndExclusive}," +
             "\"rangeStartInclusive\":${query.rangeStartInclusive}," +
             "\"sourceDataVersion\":$sdv," +
@@ -228,3 +230,7 @@ class StatsRepository @Inject constructor(
         const val SNAPSHOT_KEEP = 20
     }
 }
+
+internal suspend fun com.example.bilimonitor.data.local.dao.LiveSessionDao.loadCoverage(
+    sessions: List<LiveSessionEntity>, from: Long, to: Long
+) = sessions.map { it.stableId }.distinct().chunked(500).flatMap { coverageSpans(it, from, to) }

@@ -96,7 +96,7 @@ import com.example.bilimonitor.data.local.entity.TagEntity
         // 配置与运行态
         MonitoringConfigEntity::class, MonitoringConfigRevisionEntity::class,
         SourceDataRevisionEntity::class, SystemRuntimeLockEntity::class,
-        StreamerMonitorPolicyEntity::class,
+        StreamerMonitorPolicyEntity::class, com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity::class,
         // 统计
         StatisticsCacheEntity::class, StatisticsSnapshotEntity::class,
         StatisticsRevisionEntity::class,
@@ -128,6 +128,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun notificationAggregateDao(): NotificationAggregateDao
     abstract fun notificationHistoryDao(): NotificationHistoryDao
     abstract fun configDao(): ConfigDao
+    abstract fun roomBanHistoryDao(): com.example.bilimonitor.data.local.dao.RoomBanHistoryDao
     abstract fun runtimeLockDao(): RuntimeLockDao
     abstract fun policyDao(): PolicyDao
     abstract fun recoverySessionDao(): RecoverySessionDao
@@ -157,7 +158,7 @@ abstract class AppDatabase : RoomDatabase() {
          * v10 = 新增「熔断总开关」`circuitBreakerEnabled`（默认 true，保持既有行为），
          * 见 [AppMigrations.V9_10__circuitBreakerSwitch]。
          */
-        const val DB_VERSION = 12
+        const val DB_VERSION = 16
     }
 }
 
@@ -206,7 +207,7 @@ object AppDatabaseFactory {
                     //   最容易踩的是 createPartialIndexes：`CREATE UNIQUE INDEX IF NOT EXISTS`
                     //   在索引不存在时其实是**对既有数据的唯一性校验**，库里一旦有重复的
                     //   ACTIVE 场次/未关闭盲区，它就会抛 SQLiteConstraintException。
-                    runCatching { DbSeed.ensureSingletonRows(db, System.currentTimeMillis()) }
+                    runCatching { DbSeed.ensureSingletonRows(db, System.currentTimeMillis(), existing = true) }
                         .onFailure { reportDatabaseProblem("补种单例行失败", it) }
                     runCatching { AppMigrations.createPartialIndexes(db) }
                         .onFailure { reportDatabaseProblem("重建部分唯一索引失败（数据可能违反唯一性约束）", it) }
@@ -266,7 +267,7 @@ object DbSeed {
      * 静默覆盖等于篡改他的设置（这与 `V2_3__defaultInterval180` 那种
      * "只在值仍等于旧默认时才迁移"的取舍不同：这里选择完全不碰老数据）。
      */
-    fun ensureSingletonRows(db: SupportSQLiteDatabase, now: Long) {
+    fun ensureSingletonRows(db: SupportSQLiteDatabase, now: Long, existing: Boolean = false) {
         db.execSQL(
             "INSERT OR IGNORE INTO system_runtime_lock(singletonId, maintenanceMode, monitorGeneration, updatedAt) " +
                 "VALUES (1, 'OFF', 0, $now)"
@@ -275,6 +276,8 @@ object DbSeed {
             "INSERT OR IGNORE INTO source_data_revision(singletonId, sourceDataVersion, updatedAt) " +
                 "VALUES (1, 0, $now)"
         )
+        if (existing && db.query("""SELECT NOT EXISTS(SELECT 1 FROM monitoring_config WHERE singletonId=1)
+            AND EXISTS(SELECT 1 FROM monitoring_config_revision)""").use { it.moveToFirst() && it.getInt(0) != 0 }) return
         db.execSQL(
             """
             INSERT OR IGNORE INTO monitoring_config(

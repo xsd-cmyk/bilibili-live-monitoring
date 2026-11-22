@@ -21,6 +21,7 @@ class BiliMonitorApp : Application(), Configuration.Provider {
     @Inject lateinit var workerFactory: HiltWorkerFactory
 
     @Inject lateinit var startupRecovery: StartupRecovery
+    @Inject lateinit var nameScheduler: com.example.bilimonitor.background.NameRefreshScheduler
     @Inject lateinit var notificationCoordinator: com.example.bilimonitor.background.NotificationDeliveryCoordinator
 
     @Inject lateinit var logDao: com.example.bilimonitor.data.local.dao.LogDao
@@ -53,6 +54,7 @@ class BiliMonitorApp : Application(), Configuration.Provider {
                 android.util.Log.e("BiliMonitorApp", "启动恢复整体失败：${it.message}", it)
             }
             notificationCoordinator.start()
+            nameScheduler.start()
             try {
                 com.example.bilimonitor.background.MaintenanceWorker.schedule(this@BiliMonitorApp)
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }

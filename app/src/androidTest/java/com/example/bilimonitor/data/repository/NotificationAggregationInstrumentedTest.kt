@@ -1,5 +1,40 @@
 package com.example.bilimonitor.data.repository
 
+import com.example.bilimonitor.data.local.PendingTransition
+import com.example.bilimonitor.domain.policy.StateConfirmationPolicy
+import com.example.bilimonitor.domain.policy.StreamerMonitorContext
+import com.example.bilimonitor.domain.model.ApplyObservationResult
+import com.example.bilimonitor.domain.model.MonitoringLease
+import com.example.bilimonitor.domain.model.StreamerObservation
+import com.example.bilimonitor.domain.model.RemoteLiveRoom
+import com.example.bilimonitor.domain.model.DetectedTransition
+import com.example.bilimonitor.data.local.entity.TagEntity
+import com.example.bilimonitor.data.local.entity.GroupEntity
+import com.example.bilimonitor.data.local.entity.StreamerTagCrossRefEntity
+import com.example.bilimonitor.data.local.entity.StreamerGroupCrossRefEntity
+import com.example.bilimonitor.data.local.entity.LiveSessionTitleEntity
+import com.example.bilimonitor.data.local.entity.LiveSessionAreaEntity
+import com.example.bilimonitor.data.local.FollowImportStatus
+import com.example.bilimonitor.data.local.IntervalStatus
+import com.example.bilimonitor.data.local.RestoreRunStatus
+import com.example.bilimonitor.data.local.StatisticsEligibility
+import com.example.bilimonitor.data.local.entity.AuthSessionEntity
+import com.example.bilimonitor.data.local.entity.FollowImportStagingEntity
+import com.example.bilimonitor.data.local.entity.FollowImportTaskEntity
+import com.example.bilimonitor.data.local.entity.ReliableMonitorIntervalEntity
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import com.example.bilimonitor.background.MonitoringEngine
+import com.example.bilimonitor.data.local.BatchResponseValidity
+import com.example.bilimonitor.data.local.NotificationEventType
+import com.example.bilimonitor.data.local.RestoreConflictAction
+import com.example.bilimonitor.data.local.TransitionReason
+import com.example.bilimonitor.data.local.entity.StreamerMonitorPolicyEntity
+import com.example.bilimonitor.data.remote.bilibili.BiliLiveDataSource
+import com.example.bilimonitor.domain.model.BatchRoomStatusResponse
+import com.example.bilimonitor.domain.model.BatchStatusOutcome
+import com.example.bilimonitor.domain.policy.BanProbeOutcome
+import com.example.bilimonitor.ui.stats.StreamerStatsViewModel
 import android.database.Cursor
 import androidx.room.RoomDatabase
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -47,15 +82,496 @@ class NotificationAggregationInstrumentedTest {
     /** 可控时钟：窗口是否到期由测试自己推进，不依赖真实时间。 */
     private var wall = 1_700_000_000_000L
     private var elapsed = 10_000L
+    private var boot = "test-boot"
 
     private val clock = object : AppClock {
         override fun nowWall(): Long = wall
         override fun nowElapsed(): Long = elapsed
-        override fun bootId(): String = "test-boot"
+        override fun bootId(): String = boot
         override fun currentTimeZone(): String = "Asia/Shanghai"
     }
 
     private lateinit var repository: NotificationRepository
+
+    private fun auditMonitor() = MonitorRepository(db, db.streamerDao(), db.liveSessionDao(), db.liveEventDao(),
+        db.statusHistoryDao(), db.reliableIntervalDao(), db.monitoringGapDao(), db.liveSessionTitleDao(),
+        db.liveSessionAreaDao(), db.configDao(), db.logDao(), clock)
+
+    private fun auditHistory() = HistoryRepository(db, db.liveSessionDao(), db.liveSessionTitleDao(),
+        db.liveEventDao(), db.streamerDao(), db.logDao(), clock)
+
+    private fun auditBackup(scope: kotlinx.coroutines.CoroutineScope): BackupRepository {
+        val locks = RuntimeLockRepository(db.runtimeLockDao(), clock)
+        val quiet = QuietHoursRepository(context)
+        val config = ConfigRepository(db, db.configDao(), db.policyDao(), db.logDao(), clock, quiet)
+        return BackupRepository(context, db, db.restoreDao(), db.logDao(), locks, config, quiet,
+            MaintenanceRepository(context, db, locks, db.logDao(), clock, db.problemDao(), scope),
+            ImportSettingsRepository(context), NotificationSettingsRepository(context), clock)
+    }
+
+    private suspend fun auditApply(row: StreamerEntity, from: ConfirmedLiveStatus, reason: TransitionReason, lease: MonitoringLease): ApplyObservationResult {
+        val sequence = row.observationSequence + 1
+        return auditMonitor().applyConfirmedObservationAtomically(null,
+            DetectedTransition(row.stableId, from, ConfirmedLiveStatus.LIVE, "", sequence, row.streamerMonitorGeneration, reason),
+            StreamerObservation(row.stableId, row.uid, ObservationResult.SUCCESS, wall), sequence,
+            lease.monitorGeneration, lease.fencingToken, 1L, policy(4))
+    }
+
+    @Test fun auditNotePreservesAreaTimeline() = runBlocking {
+        val event = seedEvent(71)
+        seedSession(event)
+        val stable = event.sessionStableId!!
+        val row = db.liveSessionDao().findByStableId(stable)!!
+        db.liveSessionDao().updateAreaAtStart(row.id, "A", wall)
+        val areas = db.liveSessionAreaDao()
+        for ((offset, label) in listOf("A", "B").withIndex()) areas.insert(LiveSessionAreaEntity(stable, label, null, label, wall + offset))
+        assertEquals(CorrectionResult.Applied, auditHistory().applyManualCorrection(ManualCorrection(stable, null, null, null, "only-note", row.titleAtStart, "A")))
+        assertEquals(listOf("A", "B"), areas.listForSession(stable).map { it.areaLabel })
+        val beforeClear = areas.listForSession(stable)
+        assertEquals(listOf(wall, wall + 1), beforeClear.map { it.observedAt })
+        assertEquals(CorrectionResult.Applied, auditHistory().applyManualCorrection(ManualCorrection(stable, null, null, null, "", row.titleAtStart, "A")))
+        assertEquals(beforeClear, areas.listForSession(stable))
+    }
+
+    @Test fun auditPausedGenerationRejectsOldResponse() = runBlocking {
+        val event = seedEvent(72)
+        val dao = db.streamerDao()
+        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET confirmedLiveStatus='OFFLINE' WHERE id=?", arrayOf(event.streamerId))
+        val captured = dao.findById(event.streamerId)!!
+        val lease = RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!
+        for (enabled in listOf(false, true)) db.withTransaction {
+            dao.setMonitoringEnabled(captured.id, enabled, wall)
+            dao.bumpStreamerMonitorGeneration(captured.id, wall)
+            dao.deletePendingTransition(captured.id)
+        }
+        auditApply(captured, ConfirmedLiveStatus.OFFLINE, TransitionReason.CONFIRMATION_COUNT_REACHED, lease)
+        val stale = auditMonitor().applyObservationOnly(StreamerObservation(captured.stableId, captured.uid, ObservationResult.NETWORK_ERROR, wall),
+            null, null, captured.observationSequence + 1, lease.monitorGeneration, lease.fencingToken, requestGeneration = captured.streamerMonitorGeneration)
+        org.junit.Assert.assertFalse(stale is ApplyObservationResult.Applied)
+        assertEquals(false, auditMonitor().applyBanState(captured, lease, com.example.bilimonitor.domain.policy.RoomBanPolicy.nextState(null,
+            com.example.bilimonitor.domain.policy.RoomBanProbeResult(true), wall, 1800), 60) { error("越代探针执行了副作用") })
+        assertEquals(captured.observationSequence, dao.findById(captured.id)!!.observationSequence)
+        val current = dao.findById(captured.id)!!
+        assertEquals("status/sessions/generation", "OFFLINE/0/3", "${current.confirmedLiveStatus}/${db.liveSessionDao().listAll().size}/${current.streamerMonitorGeneration}")
+    }
+
+    @Test fun auditEngineCannotAdoptGenerationChangedDuringFetch() = runBlocking {
+        val event = seedEvent(143)
+        val dao = db.streamerDao()
+        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET confirmedLiveStatus='OFFLINE' WHERE id=?", arrayOf(event.streamerId))
+        val captured = dao.findById(event.streamerId)!!
+        var fetched = false
+        val source = object : BiliLiveDataSource {
+            override suspend fun getRoomStatus(uidList: List<Long>): BatchStatusOutcome {
+                fetched = true
+                assertEquals(listOf(captured.uid), uidList)
+                db.withTransaction {
+                    for (enabled in listOf(false, true)) {
+                        dao.setMonitoringEnabled(captured.id, enabled, wall)
+                        dao.bumpStreamerMonitorGeneration(captured.id, wall)
+                    }
+                }
+                val room = RemoteLiveRoom(captured.uid, captured.roomId, null, null, null, null, null, null, null, null, ConfirmedLiveStatus.LIVE, true)
+                return BatchStatusOutcome.Responded(BatchRoomStatusResponse(
+                    uidList, mapOf(captured.uid to room), emptySet(), emptySet(), BatchResponseValidity.VALID))
+            }
+            override suspend fun getRoomDetailByRoomId(roomId: Long): RemoteLiveRoom? = error("无需额外请求")
+            override suspend fun probeBan(roomId: Long): BanProbeOutcome = error("无需探针")
+        }
+        val config = ConfigRepository(db, db.configDao(), db.policyDao(), db.logDao(), clock, QuietHoursRepository(context))
+        val engine = MonitoringEngine(config, dao, source, auditMonitor(), repository,
+            RuntimeLockRepository(db.runtimeLockDao(), clock), db.monitoringGapDao(), db.reliableIntervalDao(), db.problemDao(), db.logDao(), db, clock, this)
+        engine.checkOnce("audit")
+        org.junit.Assert.assertTrue(fetched)
+        val current = dao.findById(captured.id)!!
+        assertEquals(ConfirmedLiveStatus.OFFLINE, current.confirmedLiveStatus)
+        assertEquals(3L, current.streamerMonitorGeneration)
+        assertEquals(captured.observationSequence, current.observationSequence)
+        assertEquals(0, db.liveSessionDao().listAll().size)
+    }
+
+    @Test fun auditFreshSessionReferencesInterval() = runBlocking {
+        val event = seedEvent(73)
+        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET confirmedLiveStatus='UNKNOWN' WHERE id=?", arrayOf(event.streamerId))
+        val captured = db.streamerDao().findById(event.streamerId)!!
+        auditApply(captured, ConfirmedLiveStatus.UNKNOWN, TransitionReason.FIRST_OBSERVATION, RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!)
+        val created = db.liveSessionDao().findActiveOpenSession(captured.id)!!
+        val interval = db.reliableIntervalDao().findActiveByStreamer(captured.stableId)!!
+        assertEquals(created.stableId, interval.sessionStableId)
+        assertEquals("new session references the actual interval", interval.intervalId, created.currentReliableIntervalId)
+    }
+
+    @Test fun auditRecoveredSessionOwnsEvent() = runBlocking {
+        val event = seedEvent(74)
+        val captured = db.streamerDao().findById(event.streamerId)!!
+        auditApply(captured, ConfirmedLiveStatus.LIVE, TransitionReason.RECOVERY_RECONFIRM, RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!)
+        val session = db.liveSessionDao().findActiveOpenSession(captured.id)!!
+        val interval = db.reliableIntervalDao().findActiveByStreamer(captured.stableId)!!
+        val recovery = db.liveEventDao().listAll().single { it.eventType == LiveEventType.LIVE_RECONFIRMED }
+        assertEquals(listOf(session.stableId, session.stableId), listOf(interval.sessionStableId, recovery.sessionStableId))
+        assertEquals(interval.intervalId, session.currentReliableIntervalId)
+        closeWindow()
+        val queued = db.notificationOutboxDao().findDue(wall, 10).single()
+        assertEquals(session.stableId, NotificationPayloads.decodeLive(queued.payloadJson)!!.sessionStableId)
+    }
+
+    @Test fun auditSkipDoesNotChangeAnotherUidPolicy() = runBlocking {
+        val event = seedEvent(75)
+        seedSession(event)
+        val session = event.sessionStableId!!
+        val taxonomy = db.taxonomyDao()
+        val tag = taxonomy.insertTag(TagEntity(stableId = "audit-tag", name = "组内标签", colorHex = null, sortOrder = 1))
+        val group = taxonomy.insertGroup(GroupEntity(stableId = "audit-group", name = "分组", sortOrder = 1, collapsed = false))
+        taxonomy.assignTag(StreamerTagCrossRefEntity(event.streamerId, tag))
+        taxonomy.assignGroup(StreamerGroupCrossRefEntity(event.streamerId, group))
+        db.liveSessionTitleDao().insert(LiveSessionTitleEntity(session, "备份标题", wall))
+        db.liveSessionAreaDao().insert(LiveSessionAreaEntity(session, "A", null, "A", wall))
+        assertEquals(CorrectionResult.Applied, auditHistory().applyManualCorrection(ManualCorrection(session, null, null, null, "备份备注")))
+        val settings = StreamerMonitorPolicyEntity(streamerId = event.streamerId, enabled = true, intervalSeconds = null, notifyStart = true, notifyEnd = true, notifyRound = false, startConfirmationCount = null, endConfirmationCount = null, aggregationEnabledOverride = null, aggregationThresholdOverride = null, overrideQuietHours = null, updatedAt = wall)
+        db.policyDao().upsert(settings)
+        val backup = auditBackup(this)
+        val text = backup.serializeToString(backup.serializeBackup())
+        for (table in listOf("streamer_tag_cross_ref", "streamer_group_cross_ref", "live_session_title", "live_session_area", "live_session_correction", "live_event")) {
+            db.openHelper.writableDatabase.execSQL("DELETE FROM $table")
+        }
+        db.streamerDao().updateIdentity(event.streamerId, 99075, wall)
+        db.policyDao().upsert(settings.copy(notifyStart = false))
+        val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
+        assertEquals(1, ready.conflicts.size)
+        backup.decideAll(ready.restoreRunId, RestoreConflictAction.SKIP)
+        assertEquals(1L, backup.applyRestore(ready.restoreRunId, text).skippedCounts["streamers"])
+        assertEquals("policy on skipped local UID", false, db.policyDao().get(event.streamerId)!!.notifyStart)
+        assertEquals(0, taxonomy.listTagRefs().size + taxonomy.listGroupRefs().size)
+        assertEquals(0, db.liveEventDao().listAll().size + db.liveSessionCorrectionDao().listAll().size)
+        assertEquals(0, db.liveSessionTitleDao().listAll().size + db.liveSessionAreaDao().listAll().size)
+    }
+
+    @Test fun auditUndecidedRestoreDoesNotCommit() = runBlocking {
+        val event = seedEvent(76)
+        val backup = auditBackup(this)
+        val text = backup.serializeToString(backup.serializeBackup())
+        db.streamerDao().updateIdentity(event.streamerId, 99076, wall)
+        val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
+        assertEquals(1, ready.conflicts.size)
+        runCatching { backup.applyRestore(ready.restoreRunId, text) }
+        assertEquals(RestoreRunStatus.WAITING_DECISIONS, db.restoreDao().getRun(ready.restoreRunId)!!.status)
+    }
+
+    @Test fun auditCancelledRestoreStaysCancelled() = runBlocking {
+        seedEvent(77)
+        val backup = auditBackup(this)
+        val text = backup.serializeToString(backup.serializeBackup())
+        val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
+        backup.cancelRun(ready.restoreRunId)
+        runCatching { backup.applyRestore(ready.restoreRunId, text) }
+        assertEquals(RestoreRunStatus.CANCELLED, db.restoreDao().getRun(ready.restoreRunId)!!.status)
+    }
+
+    @Test fun startupDoesNotTreatMissingOrConflictingSettingsAsFresh() = runBlocking {
+        fun config() = ConfigRepository(db, db.configDao(), db.policyDao(), db.logDao(), clock, QuietHoursRepository(context))
+        val chosen = com.example.bilimonitor.data.local.BackgroundKeepAliveChoice.FOREGROUND_NOTIFICATION
+        assertEquals(com.example.bilimonitor.data.local.BackgroundKeepAliveChoice.UNSET, config().startupChoice())
+        assertEquals(true, config().completeOnboarding(chosen, false))
+        assertEquals(chosen, config().startupChoice())
+        db.openHelper.writableDatabase.execSQL("UPDATE monitoring_config SET backgroundKeepAliveChoice='UNSET'")
+        assertEquals(true, runCatching { config().startupChoice() }.exceptionOrNull() is IllegalStateException)
+        db.openHelper.writableDatabase.execSQL("DELETE FROM monitoring_config")
+        db.close()
+        db = AppDatabaseFactory.createForTest(context, dbName)
+        assertEquals(true, runCatching { config().startupChoice() }.exceptionOrNull() is IllegalStateException)
+        assertEquals(null, db.configDao().getConfig())
+    }
+
+    @Test fun legacyBanHistorySurvivesBackupRestoreWithoutDuplication() = runBlocking {
+        val event = seedEvent(86)
+        val row = com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity(
+            "room-ban:${event.streamerStableId}:100", event.streamerId, null, 100, 120, null, 8123)
+        db.roomBanHistoryDao().insert(row)
+        val backup = auditBackup(this)
+        val file = backup.serializeBackup()
+        assertEquals(1L, file.manifest.recordCounts["roomBans"])
+        val text = backup.serializeToString(file)
+        db.openHelper.writableDatabase.execSQL("DELETE FROM room_ban_history")
+        repeat(2) {
+            val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
+            backup.applyRestore(ready.restoreRunId, text)
+            assertEquals(listOf(row), db.roomBanHistoryDao().listAll())
+        }
+    }
+
+    @Test fun auditAvailableSchemaMatrix() {
+        val assets = InstrumentationRegistry.getInstrumentation().context.assets
+        val folder = AppDatabase::class.java.name
+        val failures = mutableListOf<String>()
+        val variants = (2 until AppDatabase.DB_VERSION).map { it to false } + (13 to true)
+        for ((version, legacyBanSchema) in variants) {
+            val filename = "audit_from_${version}_${legacyBanSchema}.db"
+            try {
+                context.deleteDatabase(filename)
+                val source = if (legacyBanSchema) 12 else version
+                val json = assets.open("$folder/$source.json").bufferedReader().use { org.json.JSONObject(it.readText()).getJSONObject("database") }
+                android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(filename), null).use { old ->
+                    val entities = json.getJSONArray("entities")
+                    for (index in 0 until entities.length()) {
+                        val definition = entities.getJSONObject(index)
+                        val name = definition.getString("tableName")
+                        old.execSQL(definition.getString("createSql").replace("\u0024{TABLE_NAME}", name))
+                        val indices = definition.getJSONArray("indices")
+                        for (offset in 0 until indices.length()) old.execSQL(indices.getJSONObject(offset).getString("createSql").replace("\u0024{TABLE_NAME}", name))
+                    }
+                    if (legacyBanSchema) {
+                        old.execSQL("CREATE TABLE room_master_table(id INTEGER PRIMARY KEY, identity_hash TEXT)")
+                        old.execSQL("INSERT INTO room_master_table VALUES(42,'4035387a29fe3ce5f206f5c5662ea3e6')")
+                        old.execSQL("""CREATE TABLE room_ban_history(banId TEXT NOT NULL PRIMARY KEY, streamerId INTEGER NOT NULL REFERENCES streamer(id),
+                            sessionStableId TEXT, detectedAt INTEGER NOT NULL, liftedAt INTEGER, lockTill INTEGER, roomId INTEGER)""")
+                    }
+                    if (version == 15) old.execSQL("CREATE UNIQUE INDEX idx_live_session_one_active_open ON live_session(streamerId) WHERE endTime IS NULL AND lifecycleState = 'ACTIVE'")
+                    old.version = version
+                }
+                val upgraded = AppDatabaseFactory.createForTest(context, filename)
+                try {
+                    val sql = upgraded.openHelper.writableDatabase
+                    assertEquals(AppDatabase.DB_VERSION, sql.version)
+                    sql.query("PRAGMA foreign_key_check").use { assertEquals(0, it.count) }
+                    sql.query("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND sql LIKE '% WHERE %'").use { it.moveToFirst(); assertEquals(16, it.getInt(0)) }
+                } finally { upgraded.close() }
+            } catch (error: Throwable) { failures.add("v$version:${error.message?.take(120)}") }
+            finally { context.deleteDatabase(filename) }
+        }
+        assertEquals(emptyList<String>(), failures)
+    }
+
+    @Test fun auditFreshObservationAfterWallRollback() = runBlocking {
+        val event = seedEvent(79)
+        seedSession(event)
+        val row = createSingleFor(event, NotificationEventType.START_CONFIRMED)
+        withDeliveryGuard { guard ->
+            assertEquals("Ready", guard.prepare(row).javaClass.simpleName)
+            elapsed += 10_000
+            wall -= 3_600_000
+            db.openHelper.writableDatabase.execSQL("UPDATE streamer SET lastConfirmedAt=? WHERE id=?", arrayOf(wall, event.streamerId))
+            assertEquals("a fresh confirmation must release a still-valid notification", "Ready", guard.prepare(row).javaClass.simpleName)
+        }
+    }
+
+    @Test fun auditManualDurationIsNotMonitoredCoverage() = runBlocking {
+        val event = seedEvent(80)
+        assertEquals(CorrectionResult.Applied, auditHistory().createManualSession(event.streamerStableId, wall, wall + 3_600_000L, null, null, null))
+        val series = StatsSeriesRepository(db.liveSessionDao(), db.streamerDao(), clock)
+        val day = series.allBucketValues(event.streamerId, StatsGranularity.DAY).single()
+        val totals = series.seriesFor(event.streamerId, StatsGranularity.DAY, day).totals
+        assertEquals(3600L, totals.monitoredSeconds)
+        assertEquals(0L, totals.reliableMonitoredSeconds)
+    }
+
+    @Test fun auditGapEndsAtLastKnownLiveWithTwoConfirmations() = runBlocking {
+        val event = seedEvent(83)
+        seedSession(event)
+        val streamer = db.streamerDao().findById(event.streamerId)!!
+        val lease = RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!
+        val monitor = auditMonitor()
+        auditApply(streamer, ConfirmedLiveStatus.LIVE, TransitionReason.RECOVERY_RECONFIRM, lease)
+        suspend fun observe(result: ObservationResult, status: ConfirmedLiveStatus?, counting: StateConfirmationPolicy.Decision.Counting?, sequence: Long) {
+            val remote = status?.let { RemoteLiveRoom(streamer.uid, streamer.roomId, null, null, null, null, null, null, null, null, it, true) }
+            monitor.applyObservationOnly(StreamerObservation(streamer.stableId, streamer.uid, result, wall), remote, counting, sequence, lease.monitorGeneration, lease.fencingToken, policy(4), 1L, expectedIntervalSeconds = 60, requestGeneration = streamer.streamerMonitorGeneration)
+        }
+        wall += 60_000; elapsed += 60_000
+        observe(ObservationResult.SUCCESS, ConfirmedLiveStatus.LIVE, null, 3)
+        val lastLive = wall
+        wall += 60_000; elapsed += 60_000
+        observe(ObservationResult.NETWORK_ERROR, null, null, 4)
+        org.junit.Assert.assertNull(db.reliableIntervalDao().findActiveByStreamer(streamer.stableId))
+        wall += 4 * 3_600_000; elapsed += 4 * 3_600_000
+        observe(ObservationResult.SUCCESS, ConfirmedLiveStatus.OFFLINE, StateConfirmationPolicy.Decision.Counting(PendingTransition.SUSPECTED_OFFLINE, 1), 5)
+        wall += 60_000; elapsed += 60_000
+        monitor.applyConfirmedObservationAtomically(null, DetectedTransition(streamer.stableId, ConfirmedLiveStatus.LIVE, ConfirmedLiveStatus.OFFLINE, "", 6, streamer.streamerMonitorGeneration, TransitionReason.CONFIRMATION_COUNT_REACHED), StreamerObservation(streamer.stableId, streamer.uid, ObservationResult.SUCCESS, wall), 6, lease.monitorGeneration, lease.fencingToken, 1L, policy(4), expectedIntervalSeconds = 60)
+        val closed = db.liveSessionDao().findByStableId(event.sessionStableId!!)!!
+        assertEquals("seconds added after the last observed LIVE", 0L, (closed.endTime!! - lastLive) / 1000)
+    }
+
+    private suspend fun auditTick(stable: String, state: ConfirmedLiveStatus?, threshold: Int, lease: MonitoringLease) {
+        val row = db.streamerDao().findByStableId(stable)!!
+        val pending = db.streamerDao().getPendingTransition(row.id)
+        val result = if (state == null) ObservationResult.NETWORK_ERROR else ObservationResult.SUCCESS
+        val remote = state?.let { RemoteLiveRoom(row.uid, row.roomId, null, null, null, null, null, null, null, null, it, true) }
+        val transition = pending?.pendingTransition ?: PendingTransition.NONE
+        val context = StreamerMonitorContext(confirmedLiveStatus = row.confirmedLiveStatus, pendingTransition = transition,
+            pendingConfirmationCount = if (transition == PendingTransition.SUSPECTED_OFFLINE) pending!!.confirmationCount else 0,
+            hasActiveReliableInterval = db.reliableIntervalDao().findActiveByStreamer(stable) != null,
+            startConfirmationCount = 1, endConfirmationCount = threshold)
+        val sequence = row.observationSequence + 1
+        val observation = StreamerObservation(stable, row.uid, result, wall)
+        val monitor = auditMonitor()
+        val decision = StateConfirmationPolicy.detect(context, result, remote)
+        val applied = if (decision is StateConfirmationPolicy.Decision.Transition) {
+            monitor.applyConfirmedObservationAtomically(remote, DetectedTransition(stable, decision.from, decision.to, "", sequence,
+                row.streamerMonitorGeneration, decision.reason), observation, sequence, lease.monitorGeneration, lease.fencingToken, 1L, policy(4), 60)
+        } else monitor.applyObservationOnly(observation, remote, decision as? StateConfirmationPolicy.Decision.Counting, sequence,
+            lease.monitorGeneration, lease.fencingToken, policy(4), 1L, expectedIntervalSeconds = 60, requestGeneration = row.streamerMonitorGeneration)
+        org.junit.Assert.assertTrue(applied is ApplyObservationResult.Applied)
+    }
+
+    @Test fun auditClosureThresholdsWithAndWithoutGaps() = runBlocking {
+        val lease = RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease(7 * 86_400_000L)!!
+        fun advance(ms: Long) { wall += ms; elapsed += ms }
+        for (threshold in 1..3) for (gap in 0..2) {
+            val event = seedEvent(100 + threshold * 3 + gap)
+            seedSession(event)
+            val stable = event.streamerStableId
+            auditTick(stable, ConfirmedLiveStatus.LIVE, threshold, lease)
+            advance(60_000)
+            auditTick(stable, ConfirmedLiveStatus.LIVE, threshold, lease)
+            val lastLive = wall
+            if (gap == 2) {
+                if (threshold > 1) { advance(60_000); auditTick(stable, ConfirmedLiveStatus.OFFLINE, threshold, lease) }
+                advance(60_000); auditTick(stable, null, threshold, lease)
+                assertEquals(0, db.streamerDao().getPendingTransition(event.streamerId)?.confirmationCount ?: 0)
+            }
+            if (gap > 0) advance(4 * 3_600_000)
+            repeat(threshold) { advance(60_000); auditTick(stable, ConfirmedLiveStatus.OFFLINE, threshold, lease) }
+            val closed = db.liveSessionDao().findByStableId(event.sessionStableId!!)!!
+            assertEquals("threshold=$threshold gap=$gap", if (gap == 0) wall else lastLive, closed.endTime)
+            assertEquals(wall, closed.confirmedOfflineAt)
+        }
+    }
+
+    @Test fun auditRealConfirmationUsesElapsedUntilReboot() = runBlocking {
+        val event = seedEvent(134)
+        seedSession(event)
+        val lease = RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!
+        val queued = createSingleFor(event, NotificationEventType.START_CONFIRMED)
+        withDeliveryGuard { guard ->
+            wall -= 3_600_000; elapsed += 10_000
+            auditTick(event.streamerStableId, ConfirmedLiveStatus.LIVE, 2, lease)
+            assertEquals("Ready", guard.prepare(queued).javaClass.simpleName)
+            wall += 86_400_000; elapsed += 1_000
+            assertEquals("Ready", guard.prepare(queued).javaClass.simpleName)
+            wall -= 86_400_000; boot = "second-boot"; elapsed = 2_000
+            assertEquals("AwaitObservation", guard.prepare(queued).javaClass.simpleName)
+            auditTick(event.streamerStableId, ConfirmedLiveStatus.LIVE, 2, lease)
+            assertEquals("Ready", guard.prepare(queued).javaClass.simpleName)
+        }
+    }
+
+    @Test fun auditLogoutWinsBeforeImportAndTerminalCannotReplay() = runBlocking {
+        val auth = db.authSessionDao()
+        val tasks = db.followImportDao()
+        suspend fun preview(id: String, generation: Long, uid: Long) {
+            tasks.insertTask(FollowImportTaskEntity(id, generation, FollowImportStatus.PREVIEW, wall, null, 1, null))
+            tasks.insertStaging(listOf(FollowImportStagingEntity(id, uid, generation, """{"uid":$uid,"name":"测试"}""", wall)))
+        }
+        auth.insert(AuthSessionEntity("generation-1", 1, null, wall, null))
+        preview("before-logout", 1, 10101)
+        val holding = CompletableDeferred<Unit>()
+        val finishLogout = CompletableDeferred<Unit>()
+        val logout = launch {
+            db.withTransaction {
+                auth.insert(AuthSessionEntity("logout", 2, null, wall, wall))
+                auth.revokeAll(wall)
+                holding.complete(Unit)
+                finishLogout.await()
+            }
+        }
+        holding.await()
+        val waitingImport = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            commitFollowPreview(db, clock, "before-logout", setOf(10101))
+        }
+        finishLogout.complete(Unit); logout.join()
+        assertEquals(FollowImportResult.AccountChanged, waitingImport.await())
+        assertEquals(FollowImportStatus.CANCELLED, tasks.getTask("before-logout")!!.status)
+        org.junit.Assert.assertNull(db.streamerDao().findByUid(10101))
+        auth.insert(AuthSessionEntity("generation-3", 3, null, wall, null))
+        preview("active", 3, 10103)
+        assertEquals(FollowImportResult.Applied(1, 0, 0), commitFollowPreview(db, clock, "active", setOf(10103)))
+        org.junit.Assert.assertTrue(runCatching { commitFollowPreview(db, clock, "active", setOf(10103)) }.isFailure)
+        assertEquals(FollowImportStatus.COMPLETED, tasks.getTask("active")!!.status)
+    }
+
+    @Test fun auditAdoptedIdentityRemapsExistingHistoryAndOutbox() = runBlocking {
+        val event = seedEvent(147)
+        seedSession(event)
+        val backup = auditBackup(this)
+        val text = backup.serializeToString(backup.serializeBackup())
+        val localStable = "local-before-restore"
+        db.streamerDao().updateStableId(event.streamerId, localStable, wall)
+        db.openHelper.writableDatabase.execSQL("UPDATE live_event SET streamerStableId=? WHERE eventId=?", arrayOf(localStable, event.eventId))
+        val queued = createSingleFor(event.copy(streamerStableId = localStable), NotificationEventType.START_CONFIRMED)
+        val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
+        assertEquals(1, ready.conflicts.size)
+        backup.decideAll(ready.restoreRunId, RestoreConflictAction.USE_BACKUP)
+        backup.applyRestore(ready.restoreRunId, text)
+        assertEquals(event.streamerStableId, db.streamerDao().findById(event.streamerId)!!.stableId)
+        assertEquals(event.streamerStableId, db.liveEventDao().findById(event.eventId)!!.streamerStableId)
+        val rewritten = db.notificationOutboxDao().findById(queued.outboxId)!!
+        assertEquals(event.streamerStableId, NotificationPayloads.decodeLive(rewritten.payloadJson)!!.streamerStableId)
+    }
+
+    @Test fun auditExportSeparatesManualDurationFromCoverage() = runBlocking {
+        val event = seedEvent(148)
+        assertEquals(CorrectionResult.Applied, auditHistory().createManualSession(event.streamerStableId, wall, wall + 3_600_000, null, "审查场次", null))
+        val series = StatsSeriesRepository(db.liveSessionDao(), db.streamerDao(), clock)
+        val exporter = ExportRepository(context, db, RuntimeLockRepository(db.runtimeLockDao(), clock), series, db.logDao(), clock)
+        val store = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        fun readAndRemove(report: ExportRepository.ExportResult): String {
+            assertEquals(1, report.sessionCount)
+            val resolver = context.contentResolver
+            val id = resolver.query(store, arrayOf("_id"), "_display_name = ?", arrayOf(report.fileName), "_id DESC")!!.use {
+                org.junit.Assert.assertTrue(it.moveToFirst()); it.getLong(0)
+            }
+            val uri = android.content.ContentUris.withAppendedId(store, id)
+            return try { resolver.openInputStream(uri)!!.bufferedReader().use { it.readText() } }
+            finally { resolver.delete(uri, null, null) }
+        }
+        val ids = listOf(event.streamerId)
+        val history = readAndRemove(exporter.exportHistory(ids, wall, wall + 86_400_000, "验收").getOrThrow())
+        val stats = readAndRemove(exporter.exportStats(ids, wall, wall + 86_400_000, "验收").getOrThrow())
+        org.junit.Assert.assertTrue(history.contains("审查场次"))
+        org.junit.Assert.assertTrue(stats.contains("1小时0分") && stats.contains("可靠监控时长：0分0秒"))
+    }
+
+    @Test fun auditRestoreHasExactlyOneWinner() = runBlocking {
+        seedEvent(145)
+        val backup = auditBackup(this)
+        val text = backup.serializeToString(backup.serializeBackup())
+        val run = (backup.precheck(text) as BackupRepository.PrecheckResult.Ready).restoreRunId
+        val results = List(2) { async { runCatching { backup.applyRestore(run, text) } } }.map { it.await() }
+        assertEquals(1, results.count { it.isSuccess })
+        backup.cancelRun(run)
+        assertEquals(RestoreRunStatus.COMPLETED, db.restoreDao().getRun(run)!!.status)
+        org.junit.Assert.assertTrue(runCatching { backup.applyRestore(run, text) }.isFailure)
+    }
+
+    @Test fun auditReliableSecondsIntersectAndUnifyRealIntervals() = runBlocking {
+        val event = seedEvent(146)
+        val start = wall
+        assertEquals(CorrectionResult.Applied, auditHistory().createManualSession(event.streamerStableId, start, start + 100_000, null, null, null))
+        val session = db.liveSessionDao().listAll().single()
+        for ((index, bounds) in listOf(-10_000L to 30_000L, 20_000L to 50_000L, 90_000L to 150_000L).withIndex()) {
+            db.reliableIntervalDao().insert(ReliableMonitorIntervalEntity("interval-$index", event.streamerStableId, session.stableId,
+                start + bounds.first, start + bounds.second, null, 1, 1, 1, "test", IntervalStatus.CLOSED, start + bounds.second))
+        }
+        val series = StatsSeriesRepository(db.liveSessionDao(), db.streamerDao(), clock)
+        val totals = series.seriesCustom(event.streamerId, start, start + 95_000).totals
+        val stats = StatsRepository(db, db.streamerDao(), db.statisticsCacheDao(), db.statisticsSnapshotDao(), db.configDao(), clock)
+        val cached = stats.compute(StatsQuery(start, start + 95_000, "UTC", StatisticsEligibility.INCLUDE_CORRECTED)).totals
+        assertEquals(55L, totals.reliableMonitoredSeconds)
+        assertEquals(55L, cached.reliableMonitoredSeconds)
+        assertEquals(100L, totals.monitoredSeconds)
+    }
+
+    @Test fun auditStatsSelectsThisStreamersLatestDay() = runBlocking {
+        val first = seedEvent(81)
+        val second = seedEvent(82)
+        val history = auditHistory()
+        assertEquals(CorrectionResult.Applied, history.createManualSession(first.streamerStableId, wall, wall + 10_000, null, null, null))
+        assertEquals(CorrectionResult.Applied, history.createManualSession(second.streamerStableId, wall + 3 * 86_400_000L, wall + 3 * 86_400_000L + 10_000, null, null, null))
+        val series = StatsSeriesRepository(db.liveSessionDao(), db.streamerDao(), clock)
+        val export = ExportRepository(context, db, RuntimeLockRepository(db.runtimeLockDao(), clock), series, db.logDao(), clock)
+        val vm = StreamerStatsViewModel(series, export)
+        vm.load(first.streamerId)
+        val state = kotlinx.coroutines.withTimeout(5_000) { vm.state.first { !it.loading && it.result != null } }
+        assertEquals("default period on a single streamer's stats screen", 1L, state.result!!.totals.sessionCount)
+    }
 
     @Before
     fun setUp() {

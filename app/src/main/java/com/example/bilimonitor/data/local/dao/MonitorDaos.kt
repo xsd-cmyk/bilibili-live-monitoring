@@ -28,34 +28,24 @@ data class StreamerHealthGroup(val confirmedLiveStatus: ConfirmedLiveStatus, val
 
 @Dao
 interface StreamerDao {
+    @Query(NAME_TARGETS)
+    fun observeNameTargets(): Flow<List<NameTarget>>
+
+    @Query("SELECT COUNT(*) FROM streamer WHERE deletedAt IS NOT NULL AND (:onlyId IS NULL OR id = :onlyId)")
+    suspend fun deletedNameCount(onlyId: Long?): Int
+
+    @Query(NAME_TARGETS)
+    suspend fun nameTargets(): List<NameTarget>
+
+    @Query("SELECT * FROM (" + NAME_TARGETS + ") WHERE id IN (:ids) AND nameLocked = 0")
+    suspend fun unlockedNameTargets(ids: List<Long>): List<NameTarget>
+
     @Query("SELECT confirmedLiveStatus, lastError, COUNT(*) AS count FROM streamer WHERE deletedAt IS NULL AND monitoringEnabled = 1 GROUP BY confirmedLiveStatus, lastError")
     fun observeHealthGroups(): Flow<List<StreamerHealthGroup>>
 
     /**
      * 唯一允许写 Streamer 确认状态与观察结果的入口（0.6.15 / 0.6.35 CAS 模板）。
-     * 影响行数 0 → 调用方返回 StaleOrFenced / StaleSequence，禁止放宽条件重试。
-     *
-     * ★ 缺陷 3：本语句原先带一个**恒真条件**，本次删除
-     * `AND streamerMonitorGeneration = :streamerMonitorGeneration` —— 期望值由调用方在
-     * **同一个事务内**从这一行自己读出来（MonitorRepository.applyObservationOnly /
-     * applyConfirmedObservationAtomically 都是先 findActiveByStableId，再把
-     * streamer.streamerMonitorGeneration 原样传进来）⇒ 在 SQLite 里永远成立、等于没写。
-     * 后果：Tick 中途把某位主播暂停之后，**在途**的那一次观察照样能提交转换
-     * （甚至复活刚被 ABANDONED 的场次并发通知）—— 真正拦得住的只剩下面这两条。
-     *
-     * ## 真正的保护链（缺一不可，写在注释里以备后来者）
-     *  1. `observationSequence < :observationSequence`：每主播**单调递增**的观察序号。
-     *     旧序号（并发 Tick、旧进程重放、已提交过的观察）永远写不进去，序号也不会被写回退。
-     *  2. `EXISTS(system_runtime_lock ... monitorGeneration + fencingToken + maintenanceMode = 'OFF')`：
-     *     全局监控代际 + **fencing token** 必须仍是本进程持有的那份租约。另一个进程接管租约时
-     *     `acquireOrTakeoverLease` 会递增 monitorGeneration 并换发新 token，旧进程的一切写入
-     *     都会被这一条挡住（0.6.35）；维护模式（导出/恢复/清理）期间同样禁止写状态机。
-     *  3. `monitoringEnabled = 1`（本次新增）：用户**已暂停**的主播不得再提交状态转换。
-     *     暂停本身会递增主播级代际、失效区间、把 ACTIVE OPEN 转 ABANDONED
-     *     （StreamerRepository.batchSetMonitoringEnabled），但那之后**在途**的这一次观察，
-     *     只有这一条拦得住 —— 这正是"暂停拦不住在途观察"那个缺陷的修复点。
-     * 已软删除（deletedAt 非空）的主播由调用方事务内的 findActiveByStableId 挡住（返回 Invalid），
-     * 这里不重复判一次。
+     * 请求发起前的主播代际、序号与全局租约共同确定写权。CAS 失败时不提交任何业务副作用。
      */
     @Query(
         """
@@ -65,9 +55,13 @@ interface StreamerDao {
             observationSequence   = :observationSequence,
             lastCheckedAt         = :observedAt,
             lastConfirmedAt       = :eventConfirmedAt,
+            lastConfirmedElapsed  = CASE WHEN :observationResult = 'SUCCESS' THEN :elapsed ELSE lastConfirmedElapsed END,
+            lastConfirmedBootId   = CASE WHEN :observationResult = 'SUCCESS' THEN :bootId ELSE lastConfirmedBootId END,
             freshnessStatus       = :freshness,
             updatedAt             = :updatedAt
         WHERE id = :streamerId
+          AND streamerMonitorGeneration = :requestGeneration
+          AND uid = :requestUid AND deletedAt IS NULL
           AND observationSequence < :observationSequence
           AND monitoringEnabled = 1
           AND EXISTS (
@@ -81,6 +75,10 @@ interface StreamerDao {
     )
     suspend fun casConfirmedObservation(
         streamerId: Long,
+        requestGeneration: Long,
+        requestUid: Long,
+        elapsed: Long,
+        bootId: String,
         newStatus: ConfirmedLiveStatus,
         observationResult: ObservationResult,
         observationSequence: Long,
@@ -328,25 +326,21 @@ interface StreamerDao {
     suspend fun setFavorite(streamerId: Long, favorite: Boolean, now: Long): Int
 
     /** 用户手工编辑昵称：置 nameLocked = 1，远程刷新不得覆盖（249.9.1.1）。 */
-    @Query("UPDATE streamer SET name = :name, nameLocked = 1, updatedAt = :now WHERE id = :streamerId")
+    @Query("UPDATE streamer SET name = :name, nameLocked = 1, nameRevision = nameRevision + 1, updatedAt = :now WHERE id = :streamerId")
     suspend fun setUserName(streamerId: Long, name: String, now: Long): Int
 
     @Query("UPDATE streamer SET lastLiveStartedAt = :at, updatedAt = :now WHERE id = :streamerId AND (lastLiveStartedAt IS NULL OR lastLiveStartedAt < :at)")
     suspend fun noteLiveStarted(streamerId: Long, at: Long, now: Long): Int
 
-    /**
-     * 写入 / 清除「封禁中」标记。
-     *
-     * 承载字段是既有的 `streamer.lastError`（TEXT、可空、无 CHECK 约束），
-     * 内容由 `RoomBanCodec` 编码 —— 因此**不需要新列、不需要迁移**，
-     * 且备份（整行导出）与诊断包会自动带上它。
-     *
-     * 为什么单独一条语句而不是并入 `casConfirmedObservation`：
-     * 封禁状态必须**独立于**确认状态机 —— 它不参与 CAS 序号、不产生状态转换，
-     * 也不应该在 CAS 失败（Stale/Fenced）时被一起丢弃。两条语句各管各的语义。
-     */
-    @Query("UPDATE streamer SET lastError = :banJson, updatedAt = :now WHERE id = :streamerId")
-    suspend fun updateBanState(streamerId: Long, banJson: String?, now: Long): Int
+    @Query("""UPDATE streamer SET lastError = :banJson, updatedAt = :now,
+        confirmedLiveStatus = CASE WHEN :settle THEN 'OFFLINE' ELSE confirmedLiveStatus END,
+        observationSequence = observationSequence + 1 WHERE id = :streamerId
+        AND uid = :uid AND deletedAt IS NULL AND monitoringEnabled = 1
+        AND streamerMonitorGeneration = :requestGeneration AND observationSequence = :sequence
+        AND EXISTS (SELECT 1 FROM system_runtime_lock WHERE singletonId = 1 AND maintenanceMode = 'OFF'
+            AND monitorGeneration = :generation AND fencingToken = :fence)""")
+    suspend fun updateBanState(streamerId: Long, uid: Long, requestGeneration: Long, sequence: Long,
+        generation: Long, fence: String, banJson: String?, settle: Boolean, now: Long): Int
 
     /**
      * 补写**数据新鲜度快照列**（`streamer.freshnessStatus`）—— 与 CAS 语句完全独立。
@@ -387,14 +381,24 @@ interface StreamerDao {
     @Query("UPDATE streamer SET lastLiveEndedAt = :at, updatedAt = :now WHERE id = :streamerId")
     suspend fun noteLiveEnded(streamerId: Long, at: Long, now: Long): Int
 
-    /** 远程资料刷新；name 仅在 nameLocked = 0 时覆盖；uid 不匹配影响 0 行（0.6.22.2）。 */
+    @Query("""UPDATE streamer SET name = COALESCE(:validName, name), nameAttemptSucceeded = (:validName IS NOT NULL),
+        nameRevision = nameRevision + 1, nameAttemptWall = :wall, nameAttemptElapsed = :elapsed,
+        nameAttemptBoot = :boot, updatedAt = :wall WHERE id = :id AND uid = :uid AND stableId = :stableId
+        AND nameRevision = :revision AND streamerMonitorGeneration = :generation AND nameLocked = 0 AND deletedAt IS NULL
+        AND EXISTS (SELECT 1 FROM system_runtime_lock WHERE singletonId = 1 AND maintenanceMode = 'OFF'
+                    AND nameMaintenanceEpoch = :maintenanceEpoch)""")
+    suspend fun finishNameAttempt(id: Long, uid: Long, stableId: String, revision: Long, generation: Long,
+        maintenanceEpoch: Long, validName: String?, wall: Long, elapsed: Long, boot: String): Int
+
+    @Query("""UPDATE streamer SET nameLocked = 0, nameRevision = nameRevision + 1, nameAttemptWall = NULL,
+        nameAttemptElapsed = NULL, nameAttemptBoot = NULL, nameAttemptSucceeded = 0, updatedAt = :now
+        WHERE id = :id AND nameLocked = 1 AND deletedAt IS NULL""")
+    suspend fun unlockName(id: Long, now: Long): Int
+
     @Query(
         """
         UPDATE streamer
-        SET name = CASE WHEN :name IS NULL THEN name
-                        WHEN nameLocked = 1 THEN name
-                        ELSE :name END,
-            avatarUrl = COALESCE(:avatarUrl, avatarUrl),
+        SET avatarUrl = COALESCE(:avatarUrl, avatarUrl),
             roomTitle = COALESCE(:roomTitle, roomTitle),
             parentAreaName = COALESCE(:parentAreaName, parentAreaName),
             areaName = COALESCE(:areaName, areaName),
@@ -407,13 +411,13 @@ interface StreamerDao {
         """
     )
     suspend fun updateRemoteMetadata(
-        streamerId: Long, name: String?, avatarUrl: String?, roomTitle: String?,
+        streamerId: Long, avatarUrl: String?, roomTitle: String?,
         parentAreaName: String?, areaName: String?, coverUrl: String?, liveUrl: String?,
         roomId: Long?, shortRoomId: Long?, now: Long
     ): Int
 
     /** 恢复冲突 MERGE/USE_BACKUP：uid 身份采纳（0.6.40）。 */
-    @Query("UPDATE streamer SET uid = :uid, updatedAt = :now WHERE id = :streamerId")
+    @Query("UPDATE streamer SET uid = :uid, nameAttemptWall = NULL, nameRevision = nameRevision + 1, updatedAt = :now WHERE id = :streamerId")
     suspend fun updateIdentity(streamerId: Long, uid: Long, now: Long): Int
 
     /** 恢复冲突 USE_BACKUP：采纳备份 stableId 为最终身份（0.6.40）。 */
@@ -502,6 +506,17 @@ data class SessionSummaryRow(
 
 @Dao
 interface LiveSessionDao {
+    @Query("SELECT COALESCE(startTime, createdAt) FROM live_session WHERE streamerId = :streamerId AND endTime IS NOT NULL")
+    suspend fun closedBucketTimes(streamerId: Long): List<Long>
+
+    @Query("""SELECT s.stableId AS sessionStableId, s.streamerId,
+        MAX(i.startedAt, COALESCE(s.startTime, s.createdAt), :from) AS startMillis,
+        MIN(COALESCE(i.invalidatedAt, i.updatedAt), s.endTime, :to) AS endMillis
+        FROM live_session s JOIN streamer owner ON owner.id = s.streamerId
+        JOIN reliable_monitor_interval i ON i.sessionStableId = s.stableId AND i.streamerStableId = owner.stableId
+        WHERE s.stableId IN (:sessions) AND s.endTime IS NOT NULL""")
+    suspend fun coverageSpans(sessions: List<String>, from: Long, to: Long): List<com.example.bilimonitor.domain.policy.CoverageSpan>
+
     @Query("""
         SELECT s.streamerId,
             SUM(CASE WHEN s.endTime IS NOT NULL THEN 1 ELSE 0 END) AS sessionCount,
@@ -537,6 +552,9 @@ interface LiveSessionDao {
     @Query("SELECT * FROM live_session WHERE endTime IS NULL")
     suspend fun listOpenSessions(): List<LiveSessionEntity>
 
+    @Query("SELECT * FROM live_session WHERE streamerId = :id AND endTime IS NULL ORDER BY COALESCE(startTime, createdAt) DESC, id DESC")
+    suspend fun listOpenForStreamer(id: Long): List<LiveSessionEntity>
+
     @Query("SELECT * FROM live_session WHERE streamerId = :streamerId AND endTime IS NULL AND lifecycleState = 'ACTIVE' LIMIT 1")
     suspend fun findActiveOpenSession(streamerId: Long): LiveSessionEntity?
 
@@ -557,7 +575,10 @@ interface LiveSessionDao {
         """
         UPDATE live_session
         SET endTime = :endTime, endSource = :endSource, endConfidence = :endConfidence,
-            durationSeconds = :durationSeconds, durationConfidence = :durationConfidence,
+            durationSeconds = CASE WHEN durationLocked THEN durationSeconds ELSE :durationSeconds END,
+            durationConfidence = CASE WHEN durationLocked THEN durationConfidence ELSE :durationConfidence END,
+            endReason = COALESCE(:reason, endReason),
+            currentReliableIntervalId = CASE WHEN :reason IS NOT NULL THEN NULL ELSE currentReliableIntervalId END,
             confirmedOfflineAt = :confirmedOfflineAt, endTimeZone = :endTimeZone,
             correctionVersion = correctionVersion + 1, updatedAt = :updatedAt
         WHERE id = :id AND endTime IS NULL AND correctionVersion = :expectedCorrectionVersion
@@ -568,7 +589,7 @@ interface LiveSessionDao {
         endConfidence: com.example.bilimonitor.data.local.DataConfidence,
         durationSeconds: Long?, durationConfidence: com.example.bilimonitor.data.local.DataConfidence?,
         confirmedOfflineAt: Long, endTimeZone: String?,
-        expectedCorrectionVersion: Long, updatedAt: Long
+        expectedCorrectionVersion: Long, updatedAt: Long, reason: String?
     ): Int
 
     @Query("SELECT * FROM live_session WHERE id = :id")
@@ -614,7 +635,10 @@ interface LiveSessionDao {
     @Query("UPDATE live_session SET lifecycleState = 'ABANDONED', updatedAt = :now WHERE id = :id AND lifecycleState = 'ACTIVE' AND endTime IS NULL")
     suspend fun abandon(id: Long, now: Long): Int
 
-    @Query("UPDATE live_session SET currentReliableIntervalId = :intervalId, titleAtStart = COALESCE(:title, titleAtStart), areaAtStart = COALESCE(:area, areaAtStart), coverUrlAtStart = COALESCE(:cover, coverUrlAtStart), lastConfirmedLiveAt = :at, updatedAt = :now WHERE id = :id")
+    @Query("UPDATE live_session SET lastConfirmedLiveAt = :at WHERE streamerId = :streamerId AND lifecycleState = 'ACTIVE' AND endTime IS NULL")
+    suspend fun recordObservedLive(streamerId: Long, at: Long): Int
+
+    @Query("UPDATE live_session SET currentReliableIntervalId = :intervalId, titleAtStart = COALESCE(titleAtStart, :title), areaAtStart = COALESCE(areaAtStart, :area), coverUrlAtStart = COALESCE(coverUrlAtStart, :cover), lastConfirmedLiveAt = :at, updatedAt = :now WHERE id = :id")
     suspend fun attachIntervalAndLiveMeta(
         id: Long, intervalId: String, at: Long,
         title: String?, area: String?, cover: String?, now: Long

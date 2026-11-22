@@ -140,6 +140,7 @@ class AppearanceSettingsRepository @Inject constructor(
      *   换个键名，旧值自然读不到；[keyGlassCardsLegacy] 只作为兼容回读。
      */
     private val keyGlassCards = booleanPreferencesKey("glass_cards_boolean")
+    private val keyLiquidCards = booleanPreferencesKey("liquid_glass_cards")
     private val keyGlassCardsLegacy = stringPreferencesKey("glass_cards")
     private val keyGlassBlur = stringPreferencesKey("glass_blur")
     private val keyGlassTint = stringPreferencesKey("glass_tint")
@@ -172,6 +173,7 @@ class AppearanceSettingsRepository @Inject constructor(
             themeMode = prefs[keyThemeMode]?.let { n -> runCatching { ThemeMode.valueOf(n) }.getOrNull() } ?: ThemeMode.SYSTEM,
             cardDim = prefs[keyCardDim]?.toFloatOrNull()?.coerceIn(0f, 0.9f) ?: DEFAULT_CARD_DIM,
             cardAlpha = prefs[keyCardAlpha]?.toFloatOrNull()?.coerceIn(0.3f, 1f) ?: DEFAULT_CARD_ALPHA,
+            liquidCards = prefs[keyLiquidCards] ?: false,
             glassCards = prefs[keyGlassCards]
                 ?: prefs[keyGlassCardsLegacy]?.toBooleanStrictOrNull()
                 ?: false,
@@ -222,6 +224,10 @@ class AppearanceSettingsRepository @Inject constructor(
             //   关掉 Dock 玻璃不该顺手改掉卡片的设置）。原本这行会让"关 Dock"静默改掉卡片玻璃，
             //   而界面上再没有任何说明，属于"静默改变用户设置"。
         }
+    }
+
+    suspend fun setLiquidCards(enabled: Boolean) {
+        context.appearanceSettingsDataStore.edit { it[keyLiquidCards] = enabled }
     }
 
     /**
@@ -670,6 +676,7 @@ data class AppearanceSettings(
 ,
     /** 液态玻璃是否也应用到卡片（用户要求：与 Dock 同步） */
     val glassCards: Boolean = false,
+    val liquidCards: Boolean = false,
     /** 玻璃模糊半径（dp） */
     val glassBlur: Float = AppearanceSettingsRepository.DEFAULT_GLASS_BLUR,
     /** 玻璃体色浓度 */

@@ -1,5 +1,8 @@
 package com.example.bilimonitor.domain.policy
 
+import com.example.bilimonitor.data.local.ConfirmedLiveStatus
+import com.example.bilimonitor.data.local.ObservationResult
+
 /**
  * 一次封禁探针的结论（由数据源从 `room_init` 的响应构造）。
  *
@@ -89,13 +92,6 @@ sealed interface BanProbeOutcome {
  * 任何"没问到/问不到/被拒绝"都只会得到"未知"，而未知**不会**清除已有的封禁标记
  * （见 [nextState]），所以既不会误判、也不会误解除。
  *
- * ## 独立性（用户硬要求）
- *  - 封禁**不改写** `confirmedLiveStatus`：判定与推进走的是封禁专用的写入路径，
- *    不产生任何 `StatusHistory` / `LiveEvent` / `LiveSession` 变更；
- *  - 封禁**不产生**开播/下播通知；
- *  - 封禁**不参与** `StateConfirmationPolicy`（观察结果仍是原来的 SUCCESS/失败语义）。
- *
- * 它只影响两件事：**调度**（多久复查一次）与**展示**（健康中心「封禁中 N 位」）。
  */
 object RoomBanPolicy {
 
@@ -148,23 +144,9 @@ object RoomBanPolicy {
     const val MIN_RECHECK_SECONDS = 60
     const val MAX_RECHECK_SECONDS = 86_400
 
-    /**
-     * 本轮该不该对这位主播发封禁探针。
-     *
-     * ## 策略与取舍（为什么不是"每轮都探"）
-     * `room_init` 是**单个房间**的接口，而批量状态接口不返回 `is_locked`。
-     * 若每轮对所有主播都探一次，98 位主播 = 每轮多 98 个请求（放大近百倍），
-     * 与"降低服务器压力、耗电与账号风控风险"的项目原则直接冲突。
-     * 因此只在**已经有理由怀疑**时才探：
-     *  - **首次判定**：[suspicionRaised] —— 这一轮这位主播的检查失败了（含被服务端明确拒绝）。
-     *    正常情况下零额外请求；只有失败者才各多花 1 个请求，且有每轮预算上限。
-     *  - **复查**：已经在封禁中的主播，到期（[RoomBanState.nextCheckAtWall]）时探一次，
-     *    期间**完全跳过**（不再进入批量检查），因此被封禁的主播不会拖慢其他主播。
-     *
-     * 已知的保守缺口（如实记录，不掩盖）：如果某个被封禁的房间在批量状态接口里
-     * **既不失败也不报错**（表现为普通未开播），那么它不会被探到，也就不会被标成封禁。
-     * 这属于"宁可漏判也不误判"的取舍 —— 用户明确要求不得把其它状态误判成封禁。
-     */
+    fun warrantsProbe(result: ObservationResult, confirmed: ConfirmedLiveStatus, observed: ConfirmedLiveStatus?): Boolean =
+        result != ObservationResult.SUCCESS || (confirmed == ConfirmedLiveStatus.LIVE && observed == ConfirmedLiveStatus.OFFLINE)
+
     fun shouldProbe(ban: RoomBanState?, suspicionRaised: Boolean, nowWall: Long): Boolean {
         if (ban == null) return suspicionRaised
         return nowWall >= ban.nextCheckAtWall

@@ -29,7 +29,7 @@ interface FollowImportDao {
     @Query("SELECT * FROM follow_import_task WHERE importTaskId = :taskId")
     fun observeTask(taskId: String): Flow<FollowImportTaskEntity?>
 
-    @Query("UPDATE follow_import_task SET status = :status, finishedAt = :finishedAt, stagingCount = :stagingCount, error = :error WHERE importTaskId = :taskId")
+    @Query("UPDATE follow_import_task SET status = :status, finishedAt = :finishedAt, stagingCount = :stagingCount, error = :error WHERE importTaskId = :taskId AND status NOT IN ('COMPLETED','CANCELLED','FAILED')")
     suspend fun updateTask(taskId: String, status: String, finishedAt: Long?, stagingCount: Long, error: String?)
 
     /**
@@ -95,6 +95,15 @@ interface RestoreDao {
     @Query("UPDATE restore_run SET status = :next, finishedAt = :finishedAt, finishReason = :finishReason, warningCount = :warningCount WHERE restoreRunId = :id AND status = :expected")
     suspend fun casTransition(id: String, expected: RestoreRunStatus, next: RestoreRunStatus, finishedAt: Long?, finishReason: RestoreFinishReason?, warningCount: Int): Int
 
+    @Query("""UPDATE restore_run SET status = 'APPLYING'
+        WHERE restoreRunId = :id AND status IN ('PRECHECK','WAITING_DECISIONS') AND NOT EXISTS
+        (SELECT 1 FROM restore_conflict WHERE restoreRunId = :id AND decision IS NULL)""")
+    suspend fun beginDecidedRun(id: String): Int
+
+    @Query("""UPDATE restore_run SET status = 'CANCELLED', finishedAt = :now, finishReason = 'CANCELLED'
+        WHERE restoreRunId = :id AND status IN ('PRECHECK','WAITING_DECISIONS')""")
+    suspend fun cancelPendingRun(id: String, now: Long): Int
+
     @Query("SELECT * FROM restore_run WHERE status = 'APPLYING'")
     suspend fun findApplying(): List<RestoreRunEntity>
 
@@ -108,10 +117,10 @@ interface RestoreDao {
     fun observeConflicts(runId: String): Flow<List<RestoreConflictEntity>>
 
     /** 冲突决策必须带"尚未决策"CAS（0.6.33.1）。 */
-    @Query("UPDATE restore_conflict SET decision = :action WHERE conflictId = :conflictId AND decision IS NULL")
+    @Query("UPDATE restore_conflict SET decision = :action WHERE conflictId = :conflictId AND decision IS NULL AND restoreRunId IN (SELECT restoreRunId FROM restore_run WHERE status = 'WAITING_DECISIONS')")
     suspend fun decide(conflictId: String, action: RestoreConflictAction): Int
 
-    @Query("UPDATE restore_conflict SET decision = :action WHERE restoreRunId = :runId AND decision IS NULL")
+    @Query("UPDATE restore_conflict SET decision = :action WHERE restoreRunId = :runId AND decision IS NULL AND restoreRunId IN (SELECT restoreRunId FROM restore_run WHERE status = 'WAITING_DECISIONS')")
     suspend fun decideAll(runId: String, action: RestoreConflictAction): Int
 
     /** 保留策略：终态恢复运行保留 90 天（冲突行随 restore_run 级联删除）。 */
@@ -135,6 +144,9 @@ interface AuthSessionDao {
 
     @Query("SELECT COALESCE(MAX(authGeneration), 0) FROM auth_session")
     suspend fun currentGeneration(): Long
+
+    @Query("SELECT EXISTS(SELECT 1 FROM auth_session WHERE authGeneration = :generation AND revokedAt IS NULL AND authGeneration = (SELECT MAX(authGeneration) FROM auth_session))")
+    suspend fun isActiveGeneration(generation: Long): Boolean
 
     @Query("UPDATE auth_session SET revokedAt = :now WHERE revokedAt IS NULL")
     suspend fun revokeAll(now: Long): Int

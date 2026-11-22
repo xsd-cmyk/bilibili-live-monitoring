@@ -1,5 +1,7 @@
 ﻿package com.example.bilimonitor.ui.history
 
+import com.example.bilimonitor.ui.common.GlassInfoPanel
+import com.example.bilimonitor.ui.common.AppAlertDialog
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,9 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -111,6 +112,9 @@ data class StreamerHistoryUiState(
     val streamer: StreamerEntity? = null,
     val rows: List<StreamerSessionRow> = emptyList(),
     val hasMore: Boolean = false,
+    val banCount: Int = 0,
+    val bans: List<com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity> = emptyList(),
+    val hasMoreBans: Boolean = false,
     val filter: HistoryFilter = HistoryFilter(),
     val titleQuery: String = "",
     val message: String? = null
@@ -122,6 +126,7 @@ class StreamerHistoryViewModel @Inject constructor(
     private val historyRepository: HistoryRepository,
     private val streamerDao: StreamerDao,
     private val liveSessionDao: LiveSessionDao,
+    private val roomBanDao: com.example.bilimonitor.data.local.dao.RoomBanHistoryDao,
     private val titleDao: LiveSessionTitleDao,
     private val areaDao: com.example.bilimonitor.data.local.dao.LiveSessionAreaDao,
     private val exportRepository: com.example.bilimonitor.data.repository.ExportRepository
@@ -140,6 +145,7 @@ class StreamerHistoryViewModel @Inject constructor(
      */
     private val loadedStreamerId = MutableStateFlow(0L)
     private val pageLimit = MutableStateFlow(200)
+    private val banLimit = MutableStateFlow(100)
 
     /**
      * 标题搜索的**防抖**副本。
@@ -205,10 +211,19 @@ class StreamerHistoryViewModel @Inject constructor(
     fun load(streamerId: Long) {
         if (loadedStreamerId.value == streamerId) return
         pageLimit.value = 200
+        banLimit.value = 100
         loadedStreamerId.value = streamerId
     }
 
     fun loadMore() { pageLimit.value += 200 }
+    fun loadMoreBans() { banLimit.value += 100 }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val banData = combine(loadedStreamerId, banLimit) { id, limit ->
+        combine(roomBanDao.observeCount(id), roomBanDao.observeRecent(id, limit + 1)) { count, rows ->
+            Triple(count, rows.take(limit), rows.size > limit)
+        }
+    }.flatMapLatest { it }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private val sessionData = combine(loadedStreamerId, filter, debouncedTitleQuery, pageLimit) { id, f, q, limit ->
@@ -235,11 +250,12 @@ class StreamerHistoryViewModel @Inject constructor(
         loadedStreamerId.flatMapLatest { streamerDao.observeById(it) }, sessionData,
         combine(titleQuery, filter, message, pageLimit) { q, f, m, limit ->
             Pair(TitleInputs(q, q, f, m), limit)
-        }
-    ) { streamer, rows, input ->
+        }, banData
+    ) { streamer, rows, input, bans ->
         StreamerHistoryUiState(streamer = streamer, rows = rows.take(input.second),
             hasMore = rows.size > input.second, filter = input.first.filter,
-            titleQuery = input.first.immediate, message = input.first.message)
+            titleQuery = input.first.immediate, message = input.first.message,
+            banCount = bans.first, bans = bans.second, hasMoreBans = bans.third)
     }.flowOn(kotlinx.coroutines.Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StreamerHistoryUiState())
 
@@ -373,6 +389,7 @@ fun StreamerHistoryScreen(
         }
     }
     var showFilterDialog by remember { mutableStateOf(false) }
+    var showBanHistory by remember { mutableStateOf(false) }
     var showManualDialog by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<LiveSessionEntity?>(null) }
     var deleting by remember { mutableStateOf<LiveSessionEntity?>(null) }
@@ -465,6 +482,10 @@ fun StreamerHistoryScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
+            TextButton(onClick = { showBanHistory = true }, modifier = Modifier.padding(horizontal = 16.dp)) {
+                Text("已记录封禁 ${state.banCount} 次 · 查看封禁记录")
+            }
+
             // 当前筛选条件提示
             if (state.filter.type != HistoryFilterType.ALL) {
                 Row(
@@ -491,17 +512,19 @@ fun StreamerHistoryScreen(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        if (state.filter.type == HistoryFilterType.ALL && state.titleQuery.isBlank())
-                            "暂无直播记录\n确认开播后会自动记录；也可手工补录"
-                        else "没有匹配的直播记录",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    GlassInfoPanel {
+                        Text(
+                            if (state.filter.type == HistoryFilterType.ALL && state.titleQuery.isBlank())
+                                "暂无直播记录\n确认开播后会自动记录；也可手工补录"
+                            else "没有匹配的直播记录",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             } else {
                 LazyColumn(Modifier.fillMaxSize(), state = notificationListState) {
                     items(state.rows, key = { it.session.stableId }) { row ->
-                        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        AppCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                             Column(Modifier.padding(12.dp)) {
                                 if (row.session.stableId == focusedSession) {
                                     Text("通知对应场次", color = MaterialTheme.colorScheme.primary,
@@ -548,6 +571,10 @@ fun StreamerHistoryScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (row.session.endReason == "ROOM_BANNED") {
+                                    Text("因封禁结束", color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.labelMedium)
+                                }
                                 // 直播分区（用户定稿功能）：一场直播换过多个分区时全部列出
                                 if (row.areas.isNotEmpty()) {
                                     Spacer(Modifier.height(4.dp))
@@ -596,6 +623,12 @@ fun StreamerHistoryScreen(
         }
     }
 
+    if (showBanHistory) {
+        RoomBanHistoryDialog(state.bans, state.banCount,
+            com.example.bilimonitor.domain.policy.RoomBanCodec.decode(state.streamer?.lastError)?.lockedAtWall,
+            state.hasMoreBans, viewModel::loadMoreBans, onDismiss = { showBanHistory = false })
+    }
+
     if (showFilterDialog) {
         TimeRangeDialog(
             current = state.filter,
@@ -631,7 +664,7 @@ fun StreamerHistoryScreen(
 
     // 删除单条直播记录（二次确认：删除不可撤销，且会连带清掉该场次的事件/修正记录）
     deleting?.let { session ->
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { deleting = null },
             title = { Text("删除这条直播记录？") },
             text = {
@@ -756,7 +789,7 @@ private fun ManualDialog(
         fillEmptyFrom(field)
     }
 
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("手工补录直播场次") },
         text = {
@@ -881,7 +914,7 @@ private fun EditSessionDialog(
         fillEmptyFrom(field)
     }
 
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("人工修正") },
         text = {
@@ -949,8 +982,9 @@ private fun EditSessionDialog(
                     error = "下播时间不能早于开播时间"; return@TextButton
                 }
                 onSave(
-                    startE.takeIf { timesEdited }, endE.takeIf { timesEdited }, d.takeIf { timesEdited }, titleText.ifBlank { null }, noteText.ifBlank { null },
-                    areaText.ifBlank { null }
+                    startE.takeIf { timesEdited }, endE.takeIf { timesEdited }, d.takeIf { timesEdited },
+                    titleText.takeIf { it.isNotBlank() && it != session.titleAtStart }, noteText.ifBlank { null },
+                    areaText.takeIf { it.isNotBlank() && it != session.areaAtStart }
                 )
             }) { Text("保存") }
         },

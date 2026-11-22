@@ -23,6 +23,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val configRepository: ConfigRepository,
+    private val nameScheduler: com.example.bilimonitor.background.NameRefreshScheduler,
     private val monitoringController: MonitoringController,
     private val quietHoursRepository: com.example.bilimonitor.data.repository.QuietHoursRepository,
     private val notificationSettingsRepository:
@@ -106,13 +107,16 @@ class SettingsViewModel @Inject constructor(
     fun notificationsEnabled(): Boolean =
         com.example.bilimonitor.notify.NotificationPoster.hasPermission(appContext)
 
-    fun update(transform: (ConfigUpdate) -> ConfigUpdate) {
+    val nameRefresh = nameScheduler.manualState
+    fun refreshAllNames() = nameScheduler.refreshAll()
+
+    fun update(syncMonitoring: Boolean = true, transform: (ConfigUpdate) -> ConfigUpdate) {
         viewModelScope.launch {
             val result = runCatching { configRepository.update(transform(ConfigUpdate())) }
                 .getOrElse { message.value = "保存失败：${it.message}"; return@launch }
             when (result) {
                 ConfigUpdateResult.Applied -> {
-                    monitoringController.syncWithConfig()
+                    if (syncMonitoring) monitoringController.syncWithConfig()
                     message.value = "设置已保存"
                 }
                 ConfigUpdateResult.VersionConflict -> message.value = "设置已被其他修改更新，请重试"
@@ -277,7 +281,7 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
-    init {
+    fun enterBackgroundSettings() {
         runCatching {
             rikka.shizuku.Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
         }
@@ -290,11 +294,10 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    override fun onCleared() {
+    fun leaveBackgroundSettings() {
         runCatching {
             rikka.shizuku.Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
         }
-        super.onCleared()
     }
 
     fun setAdvancedWakelock(enabled: Boolean) {

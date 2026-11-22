@@ -1,5 +1,6 @@
 package com.example.bilimonitor.ui.notifications
 
+import com.example.bilimonitor.ui.common.GlassInfoPanel
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,7 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -126,7 +127,7 @@ fun NotificationHistoryScreen(onBack: () -> Unit, viewModel: NotificationHistory
                 Modifier.fillMaxSize().padding(padding),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
-            ) { Text("暂无通知记录", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            ) { GlassInfoPanel { Text("暂无通知记录", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
 
             else -> LazyColumn(
                 Modifier.fillMaxSize().padding(padding),
@@ -148,7 +149,7 @@ fun NotificationHistoryScreen(onBack: () -> Unit, viewModel: NotificationHistory
                     }
                 }
                 items(list, key = { it.historyId }) { h ->
-                    Card(Modifier.fillMaxWidth()) {
+                    AppCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
                             Row {
                                 // 主播名前置（系统类通知没有主播，就只显示类别）

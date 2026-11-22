@@ -118,8 +118,10 @@ class NotificationDeliveryGuard @Inject constructor(
         if (type == NotificationEventType.AREA_CHANGED && item.areaName != currentArea)
             return Result.Skip("STATE_SUPERSEDED")
         // Await the ordinary monitor rather than issuing a new network request for every queued item.
-        if (isLive && (streamer.lastConfirmedAt == null || row.timelineNow(clock) - streamer.lastConfirmedAt > maxOf(30_000L, period * 2_000L)))
+        if (isLive && !NotificationTimelinessPolicy.observationFresh(now, clock.nowElapsed(), clock.bootId(),
+                streamer.lastConfirmedAt, streamer.lastConfirmedElapsed, streamer.lastConfirmedBootId, period)) {
             return Result.AwaitObservation
+        }
         return Result.Ready(row.copy(expiresAt = minOf(row.expiresAt, row.timelineNow(clock) + remaining)))
     }
 }

@@ -112,7 +112,7 @@ class FollowImportRepository @Inject constructor(
     private val wbiSigner: com.example.bilimonitor.core.WbiSigner,
     @Named("appScope") private val scope: CoroutineScope
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = followImportJson
 
     suspend fun latestTask(): FollowImportTaskEntity? = db.followImportDao().latestTask()
 
@@ -752,93 +752,8 @@ class FollowImportRepository @Inject constructor(
         )
     }
 
-    /** 应用预览：只写用户勾选的 uid；代际不匹配则隔离取消。返回 (新增, 已存在, 恢复)。 */
-    suspend fun applyImport(taskId: String, selectedUids: Set<Long>): Triple<Int, Int, Int> {
-        val dao = db.followImportDao()
-        // ★ 任务行不存在时不能静默返回 (0,0,0)（复查发现的缺陷）：UI 会把它显示成
-        //   "导入完成：新增 0，恢复 0，已存在 0" —— 什么都没发生，用户却看到成功。
-        //   抛出去，UI 的 runCatching 会如实显示"导入失败：…"。
-        val task = dao.getTask(taskId)
-            ?: throw IllegalStateException("导入任务不存在（可能已被清理），请重新导入")
-        val currentGeneration = authRepository.currentAuthGeneration()
-        if (task.authGeneration != currentGeneration) {
-            dao.updateTask(taskId, FollowImportStatus.CANCELLED.name, clock.nowWall(), task.stagingCount, "登录状态已变化，任务已隔离取消")
-            return Triple(0, 0, 0)
-        }
-        dao.updateTask(taskId, FollowImportStatus.APPLYING.name, null, task.stagingCount, null)
-        val staging = dao.listStaging(taskId).filter { it.uid in selectedUids }
-        var added = 0; var existed = 0; var restored = 0
-        val now = clock.nowWall()
-        // 占位昵称取配置值（可配），与 StreamerRepository 的取值口径一致
-        val placeholder = runCatching { db.configDao().getConfig()?.placeholderText }
-            .getOrNull()?.takeIf { it.isNotBlank() } ?: "[待获取]"
-        db.withTransaction {
-            for (row in staging) {
-                val follow = runCatching {
-                    json.decodeFromString(StagedFollow.serializer(), row.payloadJson)
-                }.getOrNull() ?: continue
-                val existing = db.streamerDao().findByUid(row.uid)
-                if (existing != null) {
-                    if (existing.deletedAt != null) {
-                        db.streamerDao().restore(existing.id, now)
-                        db.streamerDao().bumpStreamerMonitorGeneration(existing.id, now)
-                        // 与 StreamerRepository.softDelete / importStreamer / addStreamer 的恢复分支
-                        // 逐字一致：代际已前进，残留的挂起计数必须一并清除 —— 否则会被新代际的
-                        // 第一次观察当成"已连续确认若干次"，可能直接凑满阈值误报状态转换（缺陷 8）。
-                        db.streamerDao().deletePendingTransition(existing.id)
-                        restored++
-                    } else {
-                        existed++
-                    }
-                    continue
-                }
-                db.streamerDao().insert(
-                    StreamerEntity(
-                        stableId = Ids.stableId("str"),
-                        uid = row.uid,
-                        roomId = null,
-                        shortRoomId = null,
-                        name = follow.name.ifBlank { placeholder },
-                        nameLocked = false,
-                        avatarUrl = follow.avatarUrl,
-                        roomTitle = null,
-                        parentAreaName = null,
-                        areaName = null,
-                        coverUrl = null,
-                        liveUrl = null,
-                        confirmedLiveStatus = com.example.bilimonitor.data.local.ConfirmedLiveStatus.UNKNOWN,
-                        lastObservationResult = ObservationResult.INVALID,
-                        observationSequence = 0,
-                        streamerMonitorGeneration = 0,
-                        monitoringEnabled = true,
-                        isFavorite = false,
-                        monitorPolicyStableId = null,
-                        lastCheckedAt = null,
-                        lastConfirmedAt = null,
-                        freshnessStatus = DataFreshness.UNKNOWN,
-                        lastLiveStartedAt = null,
-                        lastLiveEndedAt = null,
-                        lastError = null,
-                        deletedAt = null,
-                        createdAt = now,
-                        updatedAt = now
-                    )
-                )
-                added++
-            }
-            logDao.insertAudit(
-                AuditLogEntity(
-                    auditId = Ids.newId(), operationId = Ids.newId(), actor = "USER",
-                    action = "APPLY_FOLLOW_IMPORT", targetType = "follow_import_task",
-                    targetStableId = taskId, occurredAt = now,
-                    detailJson = "{\"selected\":${selectedUids.size},\"added\":$added,\"restored\":$restored,\"existed\":$existed}"
-                )
-            )
-            db.streamerDao().bumpSourceDataVersion(now)
-        }
-        dao.updateTask(taskId, FollowImportStatus.COMPLETED.name, clock.nowWall(), task.stagingCount, null)
-        return Triple(added, existed, restored)
-    }
+    suspend fun applyImport(taskId: String, selectedUids: Set<Long>): FollowImportResult =
+        commitFollowPreview(db, clock, taskId, selectedUids)
 
     suspend fun listStaging(taskId: String): List<StagedFollow> =
         db.followImportDao().listStaging(taskId).mapNotNull { row ->
@@ -846,4 +761,93 @@ class FollowImportRepository @Inject constructor(
                 json.decodeFromString(StagedFollow.serializer(), row.payloadJson)
             }.getOrNull()
         }
+}
+
+private val followImportJson = Json { ignoreUnknownKeys = true }
+
+sealed interface FollowImportResult {
+    data class Applied(val added: Int, val existed: Int, val restored: Int) : FollowImportResult
+    data object AccountChanged : FollowImportResult
+}
+
+internal suspend fun commitFollowPreview(db: AppDatabase, clock: AppClock, taskId: String, selectedUids: Set<Long>): FollowImportResult = db.withTransaction {
+    val dao = db.followImportDao()
+    val task = checkNotNull(dao.getTask(taskId)) { "导入任务不存在，请重新导入" }
+    if (task.status == FollowImportStatus.CANCELLED) return@withTransaction FollowImportResult.AccountChanged
+    check(task.status == FollowImportStatus.PREVIEW) { "该任务未处于可导入的预览状态" }
+    val now = clock.nowWall()
+    if (!db.authSessionDao().isActiveGeneration(task.authGeneration)) {
+        dao.updateTask(taskId, FollowImportStatus.CANCELLED.name, now, task.stagingCount, "登录状态已变化，任务已取消")
+        return@withTransaction FollowImportResult.AccountChanged
+    }
+    dao.updateTask(taskId, FollowImportStatus.APPLYING.name, null, task.stagingCount, null)
+    val staging = dao.listStaging(taskId).filter { it.authGeneration == task.authGeneration && it.uid in selectedUids }
+    var added = 0; var existed = 0; var restored = 0
+    val placeholder = db.configDao().getConfig()?.placeholderText?.takeIf { it.isNotBlank() } ?: "[待获取]"
+    for (row in staging) {
+        val follow = runCatching {
+            followImportJson.decodeFromString(StagedFollow.serializer(), row.payloadJson)
+        }.getOrNull() ?: continue
+        val existing = db.streamerDao().findByUid(row.uid)
+        if (existing != null) {
+            if (existing.deletedAt != null) {
+                db.streamerDao().restore(existing.id, now)
+                db.streamerDao().bumpStreamerMonitorGeneration(existing.id, now)
+                // 与 StreamerRepository.softDelete / importStreamer / addStreamer 的恢复分支
+                // 逐字一致：代际已前进，残留的挂起计数必须一并清除 —— 否则会被新代际的
+                // 第一次观察当成"已连续确认若干次"，可能直接凑满阈值误报状态转换（缺陷 8）。
+                db.streamerDao().deletePendingTransition(existing.id)
+                restored++
+            } else {
+                existed++
+            }
+            continue
+        }
+        db.streamerDao().insert(
+            StreamerEntity(
+                stableId = Ids.stableId("str"),
+                uid = row.uid,
+                roomId = null,
+                shortRoomId = null,
+                name = follow.name.trim().ifBlank { placeholder },
+                nameAttemptWall = now, nameAttemptElapsed = clock.nowElapsed(), nameAttemptBoot = clock.bootId(),
+                nameAttemptSucceeded = follow.name.isNotBlank(),
+                nameLocked = false,
+                avatarUrl = follow.avatarUrl,
+                roomTitle = null,
+                parentAreaName = null,
+                areaName = null,
+                coverUrl = null,
+                liveUrl = null,
+                confirmedLiveStatus = com.example.bilimonitor.data.local.ConfirmedLiveStatus.UNKNOWN,
+                lastObservationResult = ObservationResult.INVALID,
+                observationSequence = 0,
+                streamerMonitorGeneration = 0,
+                monitoringEnabled = true,
+                isFavorite = false,
+                monitorPolicyStableId = null,
+                lastCheckedAt = null,
+                lastConfirmedAt = null,
+                freshnessStatus = DataFreshness.UNKNOWN,
+                lastLiveStartedAt = null,
+                lastLiveEndedAt = null,
+                lastError = null,
+                deletedAt = null,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+        added++
+    }
+    db.logDao().insertAudit(
+        AuditLogEntity(
+            auditId = Ids.newId(), operationId = Ids.newId(), actor = "USER",
+            action = "APPLY_FOLLOW_IMPORT", targetType = "follow_import_task",
+            targetStableId = taskId, occurredAt = now,
+            detailJson = "{\"selected\":${selectedUids.size},\"added\":$added,\"restored\":$restored,\"existed\":$existed}"
+        )
+    )
+    db.streamerDao().bumpSourceDataVersion(now)
+    dao.updateTask(taskId, FollowImportStatus.COMPLETED.name, now, task.stagingCount, null)
+    FollowImportResult.Applied(added, existed, restored)
 }

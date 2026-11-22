@@ -21,6 +21,17 @@ object NotificationTimelinessPolicy {
             NotificationEventType.SYSTEM_PROBLEM, NotificationEventType.SYSTEM_RECOVERED -> 5
         }
 
+    fun observationFresh(nowWall: Long, nowElapsed: Long, bootId: String, confirmedAt: Long?,
+        confirmedElapsed: Long?, confirmedBootId: String?, periodSeconds: Int): Boolean {
+        if (confirmedAt == null) return false
+        val age = when {
+            confirmedElapsed == null && confirmedBootId == null -> nowWall - confirmedAt
+            confirmedBootId == bootId && confirmedElapsed != null -> nowElapsed - confirmedElapsed
+            else -> return false
+        }
+        return age in 0L..maxOf(30_000L, periodSeconds * 2_000L)
+    }
+
     fun ageMs(nowWall: Long, nowElapsed: Long, bootId: String,
         confirmedAt: Long, confirmedElapsed: Long?, confirmedBootId: String?): Long =
         if (confirmedBootId == bootId && confirmedElapsed != null) {

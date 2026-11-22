@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -200,7 +200,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             // 一键导出诊断包（原规范 219）：便于排查问题时提供给开发者。
             // 包含运行信息、日志、健康快照与脱敏配置；不含登录凭证与主播历史。
             item {
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("诊断包", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(4.dp))
@@ -227,7 +227,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
                 }
             }
             item {
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("当前状态", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(6.dp))
@@ -246,7 +246,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             if (state.openStreamerGaps.isEmpty()) item { EmptyHint("无未恢复的主播级盲区") }
             items(state.openStreamerGaps.size) { i ->
                 val g = state.openStreamerGaps[i]
-                Card { Column(Modifier.padding(10.dp)) {
+                AppCard { Column(Modifier.padding(10.dp)) {
                     Text(
                         "主播 ${g.streamerStableId.takeLast(8)}… · ${gapReasonText(g.reason.name)}",
                         style = MaterialTheme.typography.bodySmall
@@ -258,7 +258,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             if (state.problems.isEmpty()) item { EmptyHint("无活动问题") }
             items(state.problems.size) { i ->
                 val p = state.problems[i]
-                Card { Column(Modifier.padding(10.dp)) {
+                AppCard { Column(Modifier.padding(10.dp)) {
                     Text(problemText(p.problemKey), style = MaterialTheme.typography.bodySmall)
                     Text("自 ${formatTime(p.firstObservedAt)} 起", style = MaterialTheme.typography.labelSmall)
                 } }
@@ -267,7 +267,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             if (state.healthEvents.isEmpty()) item { EmptyHint("暂无记录") }
             items(state.healthEvents.size) { i ->
                 val h = state.healthEvents[i]
-                Card { Text(
+                AppCard { Text(
                     "${formatTime(h.occurredAt)} · ${h.component}: ${healthStatusText(h.fromStatus?.name)} → ${healthStatusText(h.toStatus.name)}",
                     Modifier.fillMaxWidth().padding(10.dp), style = MaterialTheme.typography.bodySmall
                 ) }
@@ -276,7 +276,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             if (state.monitoringErrors.isEmpty()) item { EmptyHint("暂无监控错误") }
             items(state.monitoringErrors.size) { i ->
                 val e = state.monitoringErrors[i]
-                Card { Column(Modifier.padding(10.dp)) {
+                AppCard { Column(Modifier.padding(10.dp)) {
                     Text("${formatTime(e.occurredAt)} · ${errorText(e.errorCode.name)}", style = MaterialTheme.typography.bodySmall)
                     (e.streamerStableId?.let { Text("主播 ${it.takeLast(8)}…", style = MaterialTheme.typography.labelSmall) })
                 } }
@@ -287,7 +287,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             if (state.appErrors.isEmpty()) item { EmptyHint("暂无软件错误") }
             items(state.appErrors.size) { i ->
                 val e = state.appErrors[i]
-                Card { Column(Modifier.padding(10.dp)) {
+                AppCard { Column(Modifier.padding(10.dp)) {
                     Text("${formatTime(e.occurredAt)} · ${errorText(e.errorCode.name)}", style = MaterialTheme.typography.bodySmall)
                     e.detail?.takeIf { it.isNotBlank() }?.let {
                         Text(it, style = MaterialTheme.typography.labelSmall,
@@ -299,7 +299,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             state.capacity?.let { cap ->
                 item { SectionTitle("历史容量") }
                 item {
-                    Card { Column(Modifier.padding(10.dp)) {
+                    AppCard { Column(Modifier.padding(10.dp)) {
                         Text(
                             "已结束场次 ${cap.closedSessions}" +
                                 (cap.limit?.let { " / $it（${cap.percentText}）" } ?: "（不限制）"),
@@ -321,7 +321,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             if (state.recoverySessions.isEmpty()) item { EmptyHint("暂无恢复会话") }
             items(state.recoverySessions.size) { i ->
                 val r = state.recoverySessions[i]
-                Card { Column(Modifier.padding(10.dp)) {
+                AppCard { Column(Modifier.padding(10.dp)) {
                     Text(
                         "${recoveryStatusText(r.status.name)}（代际 ${r.monitorGeneration}）",
                         style = MaterialTheme.typography.bodySmall
@@ -339,7 +339,7 @@ fun DiagnosticsScreen(onBack: () -> Unit, viewModel: DiagnosticsViewModel = hilt
             if (state.crashes.isEmpty()) item { EmptyHint("暂无崩溃记录") }
             items(state.crashes.size) { i ->
                 val c = state.crashes[i]
-                Card { Column(Modifier.padding(10.dp)) {
+                AppCard { Column(Modifier.padding(10.dp)) {
                     Text(c.exitReason, style = MaterialTheme.typography.bodySmall)
                     Text(
                         "${formatTime(c.occurredAt)}" +

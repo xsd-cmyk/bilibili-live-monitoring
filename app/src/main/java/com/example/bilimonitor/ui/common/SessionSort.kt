@@ -4,6 +4,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MenuDefaults
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -117,7 +121,11 @@ fun SessionSortSelector(
     var expanded by remember { mutableStateOf(false) }
     Box {
         TextButton(onClick = { expanded = true }) { Text("排序") }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        val glass = LocalCardBackdrop.current != null
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false },
+            modifier = if (expanded) Modifier.dialogGlass(MenuDefaults.shape, MenuDefaults.containerColor) else Modifier,
+            containerColor = if (glass) Color.Transparent else MenuDefaults.containerColor,
+            shadowElevation = if (glass) 0.dp else MenuDefaults.ShadowElevation) {
             SessionSortOrder.entries.forEach { order ->
                 DropdownMenuItem(
                     text = {

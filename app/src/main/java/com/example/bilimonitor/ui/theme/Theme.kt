@@ -1,5 +1,24 @@
 package com.example.bilimonitor.ui.theme
 
+import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import com.example.bilimonitor.data.repository.AppearanceSettings
+import com.example.bilimonitor.ui.common.GlassWallpaper
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.unit.IntSize
+import kotlinx.coroutines.CompletableDeferred
+import kotlin.math.ceil
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import com.example.bilimonitor.ui.common.CardBackdrop
+import com.example.bilimonitor.ui.common.LocalCardBackdrop
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -113,19 +132,12 @@ fun BiliMonitorTheme(
     cardAlpha: Float = 1f,
     content: @Composable () -> Unit
 ) {
-    val withPrimary = applyPrimary(
-        base = if (darkTheme) DarkColors else LightColors,
-        customPrimary = customPrimary,
-        darkTheme = darkTheme
-    )
+    val scheme = androidx.compose.runtime.remember(darkTheme, customPrimary, transparentSurface, cardDim, cardAlpha) {
+        val primary = applyPrimary(if (darkTheme) DarkColors else LightColors, customPrimary, darkTheme)
+        applyCardAppearance(if (transparentSurface) primary.copy(background = Color.Transparent) else primary, cardDim, cardAlpha)
+    }
     androidx.compose.runtime.CompositionLocalProvider(LocalEffectiveDarkTheme provides darkTheme) {
-        MaterialTheme(
-            colorScheme = applyCardAppearance(
-            if (transparentSurface) withPrimary.copy(background = Color.Transparent) else withPrimary,
-            cardDim, cardAlpha
-        ),
-            content = content
-        )
+        MaterialTheme(colorScheme = scheme, content = content)
     }
 }
 
@@ -210,67 +222,8 @@ internal fun applyPrimary(base: ColorScheme, customPrimary: Int?, darkTheme: Boo
     )
 }
 
-/**
- * 背景图在窗口里的实际摆放（用于"液态玻璃"Dock 取同一块像素做模糊）。
- *
- * Compose 没有"采样背后内容"的公开 API（`Modifier.blur` 只模糊自己，
- * 系统 `setBackgroundBlurRadius` 是整窗口生效）。但背景图是**我们自己画的**，
- * 所以可以把它的缩放与原点告诉下层，让任意一条浮层按自己的屏幕位置
- * 裁出对应区域再模糊 —— 这才是真实的"玻璃下透出壁纸"，而不是拿半透明色糊弄。
- *
- * @param scale  ContentScale.Crop 后的缩放倍数（**显示区域** → 窗口像素）
- * @param originX/Y 显示区域左上角在窗口坐标里的位置（Crop 居中后通常为负）
- * @param srcLeft/srcTop/srcWidth/srcHeight 当前显示的**区域**在原图里的像素矩形：
- *   用户框选过显示区域时它不是整张图（见 [AppBackground] 的 crop 参数）。少了这几个字段，
- *   玻璃取样就会按整张图去算 —— 用户框选之后 Dock 里透出的那块壁纸会整体错位。
- *   ★ 它们的取值与 [AppBackground] 里交给 `BitmapPainter` 的 `srcOffset/srcSize` **同源**
- *   （都由 `BackgroundRegionMath.pixelRegion` 算出来），这是"玻璃与背景对得上"的依据。
- */
-data class BackgroundImageInfo(
-    val bitmap: android.graphics.Bitmap,
-    val scale: Float,
-    val originX: Float,
-    val originY: Float,
-    val srcLeft: Int = 0,
-    val srcTop: Int = 0,
-    val srcWidth: Int = bitmap.width,
-    val srcHeight: Int = bitmap.height
-) {
-    /** 把窗口坐标系里的矩形换算成原图上的像素矩形（供模糊层取样）。 */
-    fun sourceRect(x: Float, y: Float, width: Float, height: Float): android.graphics.Rect {
-        val left = srcLeft + ((x - originX) / scale).toInt()
-        val top = srcTop + ((y - originY) / scale).toInt()
-        val right = srcLeft + ((x + width - originX) / scale).toInt().coerceAtMost(srcWidth)
-        val bottom = srcTop + ((y + height - originY) / scale).toInt().coerceAtMost(srcHeight)
-        return android.graphics.Rect(
-            left.coerceIn(srcLeft, (srcLeft + srcWidth - 1).coerceAtLeast(srcLeft)),
-            top.coerceIn(srcTop, (srcTop + srcHeight - 1).coerceAtLeast(srcTop)),
-            right.coerceAtLeast(srcLeft + 1),
-            bottom.coerceAtLeast(srcTop + 1)
-        )
-    }
-}
-
 /** 当前**生效**的深色状态（用户可能强制浅色/深色，不能各处置接 isSystemInDarkTheme）。 */
 val LocalEffectiveDarkTheme = androidx.compose.runtime.staticCompositionLocalOf { false }
-
-/**
- * 实时背景层（用户要求：液态玻璃改成实时渲染）。
- *
- * 由内容侧把「整个界面录进去的 GraphicsLayer」广播下来，玻璃层每帧取这一层里
- * 自己那块区域做模糊 —— 这才是**真正的实时背景模糊**：
- * 折射的是滚动中的列表内容，而不只是静态壁纸。
- *
- * 为什么能行：Compose UI 1.7+ 提供 `rememberGraphicsLayer()` + `DrawScope.drawLayer()`，
- * 可以把一段内容的绘制录进图层再在别处重绘（Haze 库的原理）。
- * 在本项目里它替代了原先"只能采样自己画的壁纸"的限制。
- *
- * 为空（未提供）时玻璃层退回壁纸采样方案。
- */
-val LocalRealtimeBackdropLayer =
-    androidx.compose.runtime.staticCompositionLocalOf<androidx.compose.ui.graphics.layer.GraphicsLayer?> { null }
-/** 供浮层读取当前背景图信息；为空表示用户没设背景图。 */
-val LocalBackgroundImageInfo = androidx.compose.runtime.staticCompositionLocalOf<BackgroundImageInfo?> { null }
 
 /**
  * 背景层**实测**的窗口宽高比（宽/高）。
@@ -302,12 +255,10 @@ fun AppBackground(
     alpha: Float,
     crop: com.example.bilimonitor.data.repository.BackgroundCrop? = null,
     frostBlur: Float = 0f,
+    cardMaterial: AppearanceSettings? = null,
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    // 计算背景图的摆放方式并广播给下层（液态玻璃 Dock 需要它来取"背后的像素"）。
-    // ★ 尺寸必须**实测**，不能用 LocalConfiguration.screenWidthDp 推算：
-    //   那个值在 API 31+ 不含系统栏，而本应用是 edge-to-edge 的（内容铺进状态栏/导航栏区域），
-    //   两者不相等 —— 差多少，玻璃取样的区域就整体偏多少。
     var windowSize by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf(androidx.compose.ui.unit.IntSize.Zero)
     }
@@ -320,82 +271,96 @@ fun AppBackground(
             )
         }
     }
-    val info = androidx.compose.runtime.remember(bitmap, windowSize, region) {
-        if (bitmap == null || region == null || region.width <= 0 || region.height <= 0 ||
-            windowSize.width == 0 || windowSize.height == 0
-        ) {
-            null
-        } else {
-            // ★ 这里算的是**显示区域**的缩放与原点（不是整张图的）：
-            //   下面实际画出来的也只有这块区域（见 BitmapPainter 的 srcOffset/srcSize），
-            //   两者用同一组数字，玻璃层按窗口位置取样时才会与背景严丝合缝。
-            val scale = maxOf(
-                windowSize.width.toFloat() / region.width,
-                windowSize.height.toFloat() / region.height
-            )
-            BackgroundImageInfo(
-                bitmap = bitmap,
-                scale = scale,
-                originX = (windowSize.width - region.width * scale) / 2f,
-                originY = (windowSize.height - region.height * scale) / 2f,
-                srcLeft = region.left,
-                srcTop = region.top,
-                srcWidth = region.width,
-                srcHeight = region.height
-            )
-        }
-    }
-    // 背景铺满的窗口比例：取景框要按它来画（见 [LocalBackgroundViewportAspect] 的说明）。
-    // 只有这里**实测**到的才是真值；0 表示还没量到（首帧），调用方应退回 Configuration 推算。
     val viewportAspect = if (windowSize.width > 0 && windowSize.height > 0) {
         windowSize.width.toFloat() / windowSize.height.toFloat()
     } else {
         0f
     }
+    val baseColor = if (LocalEffectiveDarkTheme.current) DarkColors.background else LightColors.background
+    val supportsLens = android.os.Build.VERSION.SDK_INT >= 33
+    val blur = with(LocalDensity.current) { (cardMaterial?.glassBlur ?: 0f).dp.toPx() }
+    val direct = cardMaterial != null && supportsLens && (blur == 0f || bitmap == null || alpha <= 0f)
+    val layer = if (cardMaterial != null && !direct) rememberGraphicsLayer() else null
+    val frost = if (layer != null && blur > 0f) rememberGraphicsLayer() else null
+    val divisor = when { blur >= 24f -> 4; blur >= 10f -> 2; else -> 1 }
+    val sharedFrost = remember(blur, divisor) { if (blur > 0f) android.graphics.RenderEffect.createBlurEffect(
+        blur / divisor, blur / divisor, android.graphics.Shader.TileMode.CLAMP).asComposeRenderEffect() else null }
+    androidx.compose.runtime.SideEffect { frost?.renderEffect = sharedFrost }
+    val recorded = remember(frost, bitmap, region, windowSize, baseColor, alpha, dim, blur) { CompletableDeferred<Unit>() }
+    var frozen by remember(recorded) { androidx.compose.runtime.mutableStateOf<android.graphics.Bitmap?>(null) }
+    if (frost != null && supportsLens && windowSize.width > 0 && windowSize.height > 0) {
+        androidx.compose.runtime.LaunchedEffect(recorded) {
+            recorded.await()
+            try { frozen = frost.toImageBitmap().asAndroidBitmap() } catch (_: IllegalStateException) { }
+        }
+    }
+    val wallpaper = remember(direct, bitmap, region, frozen, windowSize, baseColor, alpha, dim) {
+        val image = frozen
+        when {
+            direct -> GlassWallpaper(bitmap, region, windowSize, baseColor.toArgb(), alpha, dim)
+            image != null -> GlassWallpaper(image, com.example.bilimonitor.ui.common.BackgroundRegionMath.PixelRegion(
+                0, 0, image.width, image.height), windowSize, baseColor.toArgb(), 1f, 0f)
+            else -> null
+        }
+    }
+    val origin = remember { androidx.compose.runtime.mutableStateOf(Offset.Zero) }
+    val screenOrigin = remember { androidx.compose.runtime.mutableStateOf(Offset.Zero) }
+    val backdrop = remember(layer, frost, wallpaper, cardMaterial, divisor) {
+        if (cardMaterial != null) CardBackdrop(frost ?: layer, wallpaper, { origin.value }, cardMaterial,
+            if (frost != null) divisor.toFloat() else 1f, { screenOrigin.value }) else null
+    }
+    val locate = if (cardMaterial == null) Modifier else Modifier.onGloballyPositioned {
+        origin.value = it.positionInRoot()
+        screenOrigin.value = it.localToScreen(Offset.Zero)
+    }
+    val capture = if (layer == null) locate else locate.drawWithContent {
+        layer.record { this@drawWithContent.drawContent() }
+        if (frost != null && !recorded.isCompleted && size.width > 0 && size.height > 0) {
+            val extent = IntSize(ceil(size.width / divisor).toInt(), ceil(size.height / divisor).toInt())
+            frost.record(extent) { scale(1f / divisor, Offset.Zero) { drawLayer(layer) } }
+            recorded.complete(Unit)
+        }
+        drawLayer(layer)
+    }
     androidx.compose.runtime.CompositionLocalProvider(
-        LocalBackgroundImageInfo provides info,
-        LocalBackgroundViewportAspect provides viewportAspect
+        LocalBackgroundViewportAspect provides viewportAspect, LocalCardBackdrop provides backdrop
     ) {
-        Box(
-            Modifier.fillMaxSize().onSizeChanged {
-                if (it != windowSize) windowSize = it
-            }
-        ) {
-            if (bitmap != null && alpha > 0f && region != null) {
-                // ★ 只画用户框选的那块区域：`BitmapPainter(srcOffset, srcSize)` + `ContentScale.Crop`
-                //   与"把这块区域先裁成一张新图、再用 ContentScale.Crop 铺满"是同一个结果，
-                //   但不复制像素、不重新编码，也就不会有额外的一份位图常驻内存。
-                //   区域比例与窗口比例一致时（用户在编辑器里看到的就是这个比例）Crop 恰好了无裁切，
-                //   即"所见即所得"；比例不一致（选完之后转了屏）时退回居中裁切，与编辑器里的
-                //   处理一致（见 BackgroundRegionMath.viewStateFor 的说明）。
-                val painter = androidx.compose.runtime.remember(bitmap, region) {
-                    androidx.compose.ui.graphics.painter.BitmapPainter(
-                        image = bitmap.asImageBitmap(),
-                        srcOffset = androidx.compose.ui.unit.IntOffset(region.left, region.top),
-                        srcSize = androidx.compose.ui.unit.IntSize(region.width, region.height)
+        Box(modifier.fillMaxSize().onSizeChanged { if (it != windowSize) windowSize = it }) {
+            Box(Modifier.matchParentSize().then(capture).then(if (bitmap != null || cardMaterial != null) Modifier.background(
+                baseColor
+            ) else Modifier)) {
+                if (bitmap != null && alpha > 0f && region != null) {
+                    // ★ 只画用户框选的那块区域：`BitmapPainter(srcOffset, srcSize)` + `ContentScale.Crop`
+                    //   与"把这块区域先裁成一张新图、再用 ContentScale.Crop 铺满"是同一个结果，
+                    //   但不复制像素、不重新编码，也就不会有额外的一份位图常驻内存。
+                    //   区域比例与窗口比例一致时（用户在编辑器里看到的就是这个比例）Crop 恰好了无裁切，
+                    //   即"所见即所得"；比例不一致（选完之后转了屏）时退回居中裁切，与编辑器里的
+                    //   处理一致（见 BackgroundRegionMath.viewStateFor 的说明）。
+                    val painter = androidx.compose.runtime.remember(bitmap, region) {
+                        androidx.compose.ui.graphics.painter.BitmapPainter(
+                            image = bitmap.asImageBitmap(),
+                            srcOffset = androidx.compose.ui.unit.IntOffset(region.left, region.top),
+                            srcSize = androidx.compose.ui.unit.IntSize(region.width, region.height)
+                        )
+                    }
+                    val effect = androidx.compose.runtime.remember(frostBlur) {
+                        if (frostBlur > 0f) android.graphics.RenderEffect.createBlurEffect(frostBlur, frostBlur,
+                            android.graphics.Shader.TileMode.CLAMP).asComposeRenderEffect() else null
+                    }
+                    Image(
+                        painter = painter,
+                        contentDescription = null,
+                        // 整体磨砂：把壁纸本身模糊掉。这是"卡片也玻璃化"的关键 ——
+                        // 卡片只需半透明（主题层已统一处理 surface 系列），透出来的就是磨砂壁纸，
+                        // 不必去改上百处 Card { } 调用点。
+                        modifier = if (effect == null) Modifier.fillMaxSize() else Modifier.fillMaxSize().graphicsLayer { renderEffect = effect },
+                        contentScale = ContentScale.Crop,
+                        alpha = alpha.coerceIn(0f, 1f)
                     )
-                }
-                Image(
-                    painter = painter,
-                    contentDescription = null,
-                    // 整体磨砂：把壁纸本身模糊掉。这是"卡片也玻璃化"的关键 ——
-                    // 卡片只需半透明（主题层已统一处理 surface 系列），透出来的就是磨砂壁纸，
-                    // 不必去改上百处 Card { } 调用点。
-                    modifier = if (frostBlur > 0f) {
-                        Modifier.fillMaxSize().graphicsLayer {
-                            renderEffect = android.graphics.RenderEffect
-                                .createBlurEffect(frostBlur, frostBlur, android.graphics.Shader.TileMode.CLAMP)
-                                .asComposeRenderEffect()
-                        }
-                    } else {
-                        Modifier.fillMaxSize()
-                    },
-                    contentScale = ContentScale.Crop,
-                    alpha = alpha.coerceIn(0f, 1f)
-                )
-                // 压暗层：把整体亮度降下来，避免浅色背景把正文对比度冲淡
-                if (dim > 0f) {
-                    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dim.coerceIn(0f, 1f))))
+                    // 压暗层：把整体亮度降下来，避免浅色背景把正文对比度冲淡
+                    if (dim > 0f) {
+                        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dim.coerceIn(0f, 1f))))
+                    }
                 }
             }
             content()

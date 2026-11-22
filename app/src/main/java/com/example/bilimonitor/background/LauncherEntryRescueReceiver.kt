@@ -345,6 +345,7 @@ class LauncherEntryRescueReceiver : BroadcastReceiver() {
      *
      * @return true = 通知已交给系统；false = 没发出去（权限/异常/渠道）。
      */
+    @android.annotation.SuppressLint("MissingPermission")
     private fun postNotification(context: Context, title: String, text: String): Boolean {
         if (!NotificationPoster.hasPermission(context)) {
             Log.w(TAG, "自救援通知未发出：通知权限不可用")

@@ -25,6 +25,7 @@ import com.example.bilimonitor.domain.policy.BanProbeOutcome
 import com.example.bilimonitor.domain.policy.CallFailure
 import com.example.bilimonitor.domain.policy.RoomBanPolicy
 import com.example.bilimonitor.domain.policy.RoomBanProbeResult
+import com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity
 import com.example.bilimonitor.domain.policy.RoomBanState
 import com.example.bilimonitor.domain.policy.RoomFailureReason
 import kotlinx.coroutines.flow.Flow
@@ -71,16 +72,7 @@ class StreamerRepository @Inject constructor(
     private val outboxDao: NotificationOutboxDao,
     private val logDao: LogDao,
     private val dataSource: BiliLiveDataSource,
-    private val clock: AppClock,
-    /**
-     * 封禁标记的唯一写入入口（[MonitorRepository.applyBanState]）。
-     *
-     * 为什么不直接调 `streamerDao.updateBanState`：封禁状态必须**独立于**确认状态机，
-     * 那条 SQL 的独立性契约（不碰 confirmedLiveStatus / 观察序号 / 代际 / 历史场次 / 通知）
-     * 由 applyBanState 集中守护；在添加路径上手写第二份写入就等于把契约抄成两份，
-     * 日后改一处漏一处。仓储之间互相注入在本项目是既有做法（BackupRepository 注入 6 个仓储）。
-     */
-    private val monitorRepository: MonitorRepository
+    private val clock: AppClock
 ) {
     fun observeStreamers(query: String?): Flow<List<StreamerEntity>> =
         if (query.isNullOrBlank()) streamerDao.observeActive() else streamerDao.searchActive(query.trim())
@@ -237,7 +229,7 @@ class StreamerRepository @Inject constructor(
             )
         }
         val placeholder = config?.placeholderText ?: "[待获取]"
-        val name = info?.name?.takeIf { it.isNotBlank() } ?: placeholder
+        val remoteName = info?.takeIf { it.uid == resolved }?.name?.trim()?.takeIf { it.isNotEmpty() }
         // 房间号只取**服务端回给我们的**值：批量响应 → 探针响应（`room_init` 的 id 参数
         // 既接受房间号也接受 uid，所以用户输入的那个数字**不能**当作房间号落库 ——
         // resolveUid 在主路径失败时会换一种解释重试，输入的数字可能其实是 uid）。
@@ -252,15 +244,17 @@ class StreamerRepository @Inject constructor(
             uid = resolved,
             roomId = roomId,
             shortRoomId = info?.shortRoomId,
-            name = name,
-            nameLocked = info?.name == null,
+            name = remoteName ?: placeholder, nameLocked = false,
+            nameAttemptWall = clock.nowWall(), nameAttemptElapsed = clock.nowElapsed(), nameAttemptBoot = clock.bootId(),
+            nameAttemptSucceeded = remoteName != null,
             avatarUrl = info?.avatarUrl,
             roomTitle = info?.roomTitle,
             parentAreaName = info?.parentAreaName,
             areaName = info?.areaName,
             coverUrl = info?.coverUrl,
             liveUrl = info?.liveUrl,
-            confirmedLiveStatus = com.example.bilimonitor.data.local.ConfirmedLiveStatus.UNKNOWN,
+            confirmedLiveStatus = if (banState == null) com.example.bilimonitor.data.local.ConfirmedLiveStatus.UNKNOWN
+                else com.example.bilimonitor.data.local.ConfirmedLiveStatus.OFFLINE,
             lastObservationResult = ObservationResult.INVALID,
             observationSequence = 0,
             streamerMonitorGeneration = 0,
@@ -272,13 +266,17 @@ class StreamerRepository @Inject constructor(
             freshnessStatus = DataFreshness.UNKNOWN,
             lastLiveStartedAt = null,
             lastLiveEndedAt = null,
-            lastError = null,
+            lastError = banState?.let { com.example.bilimonitor.domain.policy.RoomBanCodec.encode(it) },
             deletedAt = null,
             createdAt = now,
             updatedAt = now
         )
         val id = db.withTransaction {
             val newId = streamerDao.insert(entity)
+            banState?.let { ban ->
+                db.roomBanHistoryDao().insert(RoomBanHistoryEntity(RoomBanHistoryEntity.key(entity.stableId, ban.lockedAtWall),
+                    newId, null, ban.lockedAtWall, null, ban.lockTill, entity.roomId ?: entity.shortRoomId))
+            }
             logDao.insertAudit(
                 AuditLogEntity(
                     auditId = Ids.newId(), operationId = Ids.newId(), actor = "USER",
@@ -288,19 +286,7 @@ class StreamerRepository @Inject constructor(
             )
             newId
         }
-        // ★ 顺序保证：封禁标记必须在**主播行已经建好之后**才写。
-        //   updateBanState 是"按 streamerId 更新既有行"的单列 UPDATE，行还不存在时它只会
-        //   得到一次 rows = 0 的空更新 —— 标记静默丢失 ⇒ 引擎不会跳过常规检查、也不会用
-        //   30 分钟复查接管它，用户看到的就成了"加了个被封禁的主播却一直按常规频率白问"。
-        //   因此：先 insert（含审计）→ 再 applyBanState → 最后回读整行作为返回值。
-        //
-        // 已知残留边界（如实记录，本方法内不解决）：极端情况下上游可能给出 is_locked 却缺
-        // room_id（字段被裁剪），此时实体 roomId 为 NULL，而引擎的复查只按 `roomId ?: shortRoomId`
-        // 发探针 —— 这条标记将无法自动解除（保守方向：宁可永不自动解除，也不误报开播）。
-        // 该边界与引擎既有的"批量标记零请求判定"路径同源（那条路径同样可能在 roomId 为 NULL
-        // 时写标记），要彻底修应修在引擎侧；这里不引入"有时不写标记"的第三种行为。
         val ban = banState
-        if (ban != null) monitorRepository.applyBanState(id, ban)
         val saved = streamerDao.findById(id)!!
         return if (ban != null) {
             AddStreamerResult.AddedBanned(
@@ -426,7 +412,9 @@ class StreamerRepository @Inject constructor(
             .getOrNull()?.takeIf { it.isNotBlank() } ?: "[待获取]"
         val entity = StreamerEntity(
             stableId = Ids.stableId("str"), uid = uid, roomId = null, shortRoomId = null,
-            name = name.ifBlank { placeholder }, nameLocked = false,
+            name = name.trim().ifBlank { placeholder }, nameLocked = false,
+            nameAttemptWall = now, nameAttemptElapsed = clock.nowElapsed(), nameAttemptBoot = clock.bootId(),
+            nameAttemptSucceeded = name.isNotBlank(),
             avatarUrl = avatarUrl, roomTitle = null, parentAreaName = null, areaName = null,
             coverUrl = null, liveUrl = null,
             confirmedLiveStatus = com.example.bilimonitor.data.local.ConfirmedLiveStatus.UNKNOWN,
@@ -451,6 +439,8 @@ class StreamerRepository @Inject constructor(
         }
         return AddStreamerResult.Added(streamerDao.findById(id)!!)
     }
+
+    suspend fun unlockName(streamerId: Long) = streamerDao.unlockName(streamerId, clock.nowWall()) > 0
 
     suspend fun setUserName(streamerId: Long, name: String) {
         streamerDao.setUserName(streamerId, name.trim(), clock.nowWall())
@@ -527,7 +517,6 @@ class StreamerRepository @Inject constructor(
         val info = remote?.resultsByUid?.get(streamer.uid) ?: return false
         streamerDao.updateRemoteMetadata(
             streamerId = streamerId,
-            name = info.name,
             avatarUrl = info.avatarUrl,
             roomTitle = info.roomTitle,
             parentAreaName = info.parentAreaName,

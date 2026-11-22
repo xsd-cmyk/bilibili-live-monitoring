@@ -1,5 +1,6 @@
 package com.example.bilimonitor.ui.data
 
+import com.example.bilimonitor.ui.common.AppAlertDialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -14,9 +15,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -150,6 +150,7 @@ class DataViewModel @Inject constructor(
         viewModelScope.launch {
             backupRepository.decideAll(runId, action)
             val conflicts = backupRepository.listConflicts(runId)
+            if (_state.value.precheck?.restoreRunId != runId) return@launch
             _state.value = _state.value.copy(
                 precheck = _state.value.precheck?.copy(conflicts = conflicts)
             )
@@ -158,6 +159,7 @@ class DataViewModel @Inject constructor(
 
     fun applyRestore() {
         val pre = _state.value.precheck ?: return
+        if (pre.conflicts.any { it.decision == null }) return
         val content = _state.value.backupContent ?: return
         // 走统一的 runBusy：busy 在进协程前就置位（重入守卫），
         // 且无论成功/失败/抛异常都会在 finally 复位
@@ -188,13 +190,15 @@ class DataViewModel @Inject constructor(
                 "场次" to (summary.skippedCounts["sessions"] ?: 0),
                 "事件" to (summary.skippedCounts["events"] ?: 0),
                 "标题" to (summary.skippedCounts["titles"] ?: 0),
-                "分区" to (summary.skippedCounts["areas"] ?: 0)
+                "分区" to (summary.skippedCounts["areas"] ?: 0),
+                "封禁历史" to (summary.skippedCounts["roomBans"] ?: 0)
             ).filter { it.second > 0L }
             val summaryText = buildString {
                 append("恢复完成：新增主播 ${summary.restoredCounts["streamers"] ?: 0}")
                 append("、更新主播 ${summary.restoredCounts["updated"] ?: 0}")
                 append("、场次 ${summary.restoredCounts["sessions"] ?: 0}")
                 append("、事件 ${summary.restoredCounts["events"] ?: 0}")
+                append("、封禁历史 ${summary.restoredCounts["roomBans"] ?: 0}")
                 // 归属行单独报数：这两行数据以前**根本不恢复**（分组归属）或者恢复了也不报
                 //（标签归属），用户没有任何办法判断"我原来的标签/分组还在不在"。
                 append("、标签新建 ${summary.restoredCounts["tagsNew"] ?: 0}")
@@ -288,22 +292,22 @@ fun DataScreen(onBack: () -> Unit, viewModel: DataViewModel = hiltViewModel()) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (state.busy) {
-                Card { Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                AppCard { Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.padding(end = 12.dp).height(20.dp))
                     Text("正在操作（已进入维护模式，监控暂停）…")
                 } }
             }
 
             state.message?.let {
-                Card { Text(it, Modifier.fillMaxWidth().padding(14.dp)) }
+                AppCard { Text(it, Modifier.fillMaxWidth().padding(14.dp)) }
             }
             state.restoreSummary?.let {
-                Card { Text(it, Modifier.fillMaxWidth().padding(14.dp), color = MaterialTheme.colorScheme.primary) }
+                AppCard { Text(it, Modifier.fillMaxWidth().padding(14.dp), color = MaterialTheme.colorScheme.primary) }
             }
 
             // 恢复流程（预检 → 冲突决策 → 应用）
             state.precheck?.let { pre ->
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("恢复预检通过", fontWeight = FontWeight.SemiBold)
                         state.backupFileName?.let {
@@ -341,7 +345,7 @@ fun DataScreen(onBack: () -> Unit, viewModel: DataViewModel = hiltViewModel()) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             // 「执行恢复」与同一页其它长流程按钮一致：进行中即禁用。
                             // 恢复会往库里写大量记录，重复触发只会互相干扰。
-                            Button(onClick = { viewModel.applyRestore() }, enabled = !state.busy) {
+                            Button(onClick = { viewModel.applyRestore() }, enabled = !state.busy && pre.conflicts.none { it.decision == null }) {
                                 Text("执行恢复")
                             }
                             OutlinedButton(onClick = { viewModel.cancelRestore() }, enabled = !state.busy) {
@@ -399,7 +403,7 @@ fun DataScreen(onBack: () -> Unit, viewModel: DataViewModel = hiltViewModel()) {
     if (showCapacityDialog) {
         var selected by remember { mutableStateOf(capacityMode) }
         var max by remember { mutableStateOf(maxRecords) }
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { showCapacityDialog = false },
             title = { Text("历史容量") },
             text = {
@@ -446,7 +450,7 @@ fun DataScreen(onBack: () -> Unit, viewModel: DataViewModel = hiltViewModel()) {
 
 @Composable
 private fun SettingCard(title: String, content: @Composable () -> Unit) {
-    Card {
+    AppCard {
         Column(Modifier.padding(14.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))

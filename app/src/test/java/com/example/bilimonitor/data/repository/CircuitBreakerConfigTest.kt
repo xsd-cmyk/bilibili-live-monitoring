@@ -272,6 +272,11 @@ class CircuitBreakerConfigTest {
              "endConfirmationCount":1,"placeholderText":"[待获取]"}
         """.trimIndent()
         val dto = json.decodeFromString(BackupMonitoringSettings.serializer(), legacyDto)
+        assertEquals(24, dto.nameRefreshHours)
+        assertEquals(1, dto.nameRetryMinutes)
+        val custom = dto.copy(nameRefreshHours = 6, nameRetryMinutes = 3)
+        assertEquals(custom, json.decodeFromString(BackupMonitoringSettings.serializer(),
+            json.encodeToString(BackupMonitoringSettings.serializer(), custom)))
         assertTrue(dto.circuitBreakerEnabled)
         assertEquals("默认值不能把已存在的字段带偏", 60, dto.circuitBreakerRecoverySeconds)
     }
@@ -300,9 +305,9 @@ class CircuitBreakerConfigTest {
     }
 
     @Test
-    fun `DB_VERSION 升到 12`() {
+    fun `DB_VERSION 升到 16`() {
         val field = AppDatabase::class.java.getField("DB_VERSION")
-        assertEquals("库版本必须与 @Database(version = ...) 同步", 12, field.getInt(null))
+        assertEquals("库版本必须与 @Database(version = ...) 同步", 16, field.getInt(null))
     }
 
     @Test
@@ -314,8 +319,8 @@ class CircuitBreakerConfigTest {
             pairs.contains(10 to 11)
         )
         assertEquals(
-            "迁移链必须首尾相接：1→2→…→10→11",
-            listOf(1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8, 8 to 9, 9 to 10, 10 to 11, 11 to 12),
+            "迁移链必须首尾相接，直到当前版本",
+            (1 until AppDatabase.DB_VERSION).map { it to it + 1 },
             pairs
         )
     }

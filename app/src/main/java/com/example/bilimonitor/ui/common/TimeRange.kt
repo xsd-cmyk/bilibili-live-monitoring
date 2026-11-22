@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -199,7 +198,7 @@ fun TimeRangeDialog(
         else -> v
     }
 
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
@@ -311,7 +310,12 @@ fun TimeRangeDialog(
             date.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
         }.getOrNull()
         val pickerState = rememberDatePickerState(initialSelectedDateMillis = initialMillis)
+        val glass = LocalCardBackdrop.current != null
+        val defaults = androidx.compose.material3.DatePickerDefaults
+        val colors = if (glass) defaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent) else defaults.colors()
         DatePickerDialog(
+            modifier = Modifier.dialogGlass(defaults.shape, defaults.colors().containerColor),
+            colors = colors,
             onDismissRequest = { showCalendar = false },
             confirmButton = {
                 TextButton(onClick = {
@@ -326,7 +330,7 @@ fun TimeRangeDialog(
             },
             dismissButton = { TextButton(onClick = { showCalendar = false }) { Text("取消") } }
         ) {
-            DatePicker(state = pickerState)
+            DatePicker(state = pickerState, colors = colors)
         }
     }
 }

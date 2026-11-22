@@ -13,7 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
@@ -125,7 +125,7 @@ fun OnboardingScreen(
             lines = listOf(
                 "用途：在通知栏常驻一条“正在监控 xx 位主播”的通知，用前台服务换取后台持续运行。",
                 "需要：通知权限（Android 13+ 需用户授权）。",
-                "代价：通知栏会一直有一条通知；Android 15+ 上系统对这类前台服务有累计运行时长限制，到达上限后会被系统停止。",
+                "代价：通知栏会一直有一条通知；本应用使用 specialUse 前台服务，不属于 Android 15 的数据同步或媒体处理六小时配额；省电策略、厂商限制或手动停止仍可中断监控。",
                 "可随时：在设置页切换为其他方式。"
             )
         )
@@ -217,7 +217,7 @@ private fun KeepAliveOptionCard(
     onSelect: () -> Unit,
     lines: List<String>
 ) {
-    Card(
+    AppCard(
         colors = CardDefaults.cardColors(
             containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant

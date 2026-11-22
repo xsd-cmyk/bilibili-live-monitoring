@@ -404,6 +404,55 @@ object AppMigrations {
         }
     }
 
+    val V12_13__streamerNames = object : Migration(12, 13) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            dropPartialIndexes(db)
+            db.execSQL("ALTER TABLE system_runtime_lock ADD COLUMN nameMaintenanceEpoch INTEGER NOT NULL DEFAULT 0")
+            for (table in listOf("monitoring_config", "monitoring_config_revision")) {
+                db.execSQL("ALTER TABLE $table ADD COLUMN nameRefreshHours INTEGER NOT NULL DEFAULT 24")
+                db.execSQL("ALTER TABLE $table ADD COLUMN nameRetryMinutes INTEGER NOT NULL DEFAULT 1")
+            }
+            db.execSQL("ALTER TABLE streamer ADD COLUMN nameAttemptWall INTEGER")
+            db.execSQL("ALTER TABLE streamer ADD COLUMN nameAttemptElapsed INTEGER")
+            db.execSQL("ALTER TABLE streamer ADD COLUMN nameAttemptBoot TEXT")
+            db.execSQL("ALTER TABLE streamer ADD COLUMN nameAttemptSucceeded INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE streamer ADD COLUMN nameRevision INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
+    val V13_14__observationClock = object : Migration(13, 14) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val legacyBanSchema = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='room_master_table'").use { it.moveToFirst() } &&
+                db.query("SELECT identity_hash FROM room_master_table WHERE id=42").use {
+                    it.moveToFirst() && it.getString(0) == "4035387a29fe3ce5f206f5c5662ea3e6"
+                }
+            if (legacyBanSchema) V12_13__streamerNames.migrate(db)
+            dropPartialIndexes(db)
+            db.execSQL("ALTER TABLE streamer ADD COLUMN lastConfirmedElapsed INTEGER")
+            db.execSQL("ALTER TABLE streamer ADD COLUMN lastConfirmedBootId TEXT")
+        }
+    }
+
+    val V14_15__preserveRoomBanHistory = object : Migration(14, 15) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            dropPartialIndexes(db)
+            db.execSQL("""CREATE TABLE IF NOT EXISTS room_ban_history (
+                banId TEXT NOT NULL PRIMARY KEY, streamerId INTEGER NOT NULL, sessionStableId TEXT,
+                detectedAt INTEGER NOT NULL, liftedAt INTEGER, lockTill INTEGER, roomId INTEGER,
+                FOREIGN KEY(streamerId) REFERENCES streamer(id) ON UPDATE NO ACTION ON DELETE NO ACTION)""")
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_room_ban_history_streamerId ON room_ban_history(streamerId)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_room_ban_history_sessionStableId ON room_ban_history(sessionStableId)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_room_ban_history_streamerId_detectedAt ON room_ban_history(streamerId, detectedAt)")
+        }
+    }
+
+    val V15_16__backfillRoomBans = object : Migration(15, 16) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            dropPartialIndexes(db)
+            RoomBanHistoryMigration.backfill(db)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         V1_2__createPendingIndexes,
         V2_3__defaultInterval180,
@@ -415,6 +464,10 @@ object AppMigrations {
         V8_9__failureRatioAndBanRecheck,
         V9_10__circuitBreakerSwitch,
         V10_11__aggregateKindAndEndAggregation,
-        V11_12__notificationTimeline
+        V11_12__notificationTimeline,
+        V12_13__streamerNames,
+        V13_14__observationClock,
+        V14_15__preserveRoomBanHistory,
+        V15_16__backfillRoomBans
     )
 }

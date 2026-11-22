@@ -9,16 +9,19 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+val releaseIteration = 14
+
 android {
     namespace = "com.example.bilimonitor"
     compileSdk = 35
+    sourceSets.getByName("androidTest").assets.srcDir("schemas")
 
     defaultConfig {
         applicationId = "com.example.bilimonitor"
         minSdk = 31
         targetSdk = 35
-        versionCode = 7
-        versionName = "0622.4"
+        versionCode = 3 + releaseIteration
+        versionName = "0622.$releaseIteration"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -92,9 +95,7 @@ android {
         // release 构建触发 lintVital（致命问题检查）。
         // 台账 H19-2.10：这里原先把 release 检查也关了，等于把"缺少权限声明、
         // PendingIntent 可变标志、NewApi 调用"这类致命问题永久放行。
-        // 现在恢复 release 检查（有致命问题就让构建失败），但保留 abortOnError=false
-        // 以免历史遗留的大量 warning 阻断日常 assembleDebug。
-        abortOnError = false
+        abortOnError = true
         checkReleaseBuilds = true
     }
 }

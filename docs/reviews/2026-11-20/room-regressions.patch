@@ -1,0 +1,203 @@
+diff --git a/app/src/androidTest/java/com/example/bilimonitor/data/repository/NotificationAggregationInstrumentedTest.kt b/app/src/androidTest/java/com/example/bilimonitor/data/repository/NotificationAggregationInstrumentedTest.kt
+index 25c5b3d..3b6ff84 100644
+--- a/app/src/androidTest/java/com/example/bilimonitor/data/repository/NotificationAggregationInstrumentedTest.kt
++++ b/app/src/androidTest/java/com/example/bilimonitor/data/repository/NotificationAggregationInstrumentedTest.kt
+@@ -57,6 +57,198 @@ class NotificationAggregationInstrumentedTest {
+ 
+     private lateinit var repository: NotificationRepository
+ 
++    private fun auditMonitor() = MonitorRepository(db, db.streamerDao(), db.liveSessionDao(), db.liveEventDao(), db.statusHistoryDao(), db.reliableIntervalDao(), db.monitoringGapDao(), db.liveSessionTitleDao(), db.liveSessionAreaDao(), db.configDao(), db.logDao(), clock)
++
++    private fun auditHistory() = HistoryRepository(db, db.liveSessionDao(), db.liveSessionTitleDao(), db.liveEventDao(), db.streamerDao(), db.logDao(), clock)
++
++    private fun auditBackup(scope: kotlinx.coroutines.CoroutineScope): BackupRepository {
++        val locks = RuntimeLockRepository(db.runtimeLockDao(), clock)
++        val quiet = QuietHoursRepository(context)
++        return BackupRepository(context, db, db.restoreDao(), db.logDao(), locks, ConfigRepository(db, db.configDao(), db.policyDao(), db.logDao(), clock, quiet), quiet, MaintenanceRepository(context, db, locks, db.logDao(), clock, db.problemDao(), scope), ImportSettingsRepository(context), NotificationSettingsRepository(context), clock)
++    }
++
++    private suspend fun auditApply(row: StreamerEntity, from: ConfirmedLiveStatus, reason: com.example.bilimonitor.data.local.TransitionReason, lease: com.example.bilimonitor.domain.model.MonitoringLease) = auditMonitor().applyConfirmedObservationAtomically(null, com.example.bilimonitor.domain.model.DetectedTransition(row.stableId, from, ConfirmedLiveStatus.LIVE, "", row.observationSequence + 1, row.streamerMonitorGeneration, reason), com.example.bilimonitor.domain.model.StreamerObservation(row.stableId, row.uid, ObservationResult.SUCCESS, wall), row.observationSequence + 1, lease.monitorGeneration, lease.fencingToken, 1L, policy(4))
++
++    @Test fun auditNotePreservesAreaTimeline() = runBlocking {
++        val event = seedEvent(71)
++        seedSession(event)
++        val stable = event.sessionStableId!!
++        val row = db.liveSessionDao().findByStableId(stable)!!
++        db.liveSessionDao().updateAreaAtStart(row.id, "A", wall)
++        val areas = db.liveSessionAreaDao()
++        for ((offset, label) in listOf("A", "B").withIndex()) areas.insert(com.example.bilimonitor.data.local.entity.LiveSessionAreaEntity(stable, label, null, label, wall + offset))
++        assertEquals(CorrectionResult.Applied, auditHistory().applyManualCorrection(ManualCorrection(stable, null, null, null, "only-note", row.titleAtStart, "A")))
++        assertEquals(listOf("A", "B"), areas.listForSession(stable).map { it.areaLabel })
++    }
++
++    @Test fun auditPausedGenerationRejectsOldResponse() = runBlocking {
++        val event = seedEvent(72)
++        val dao = db.streamerDao()
++        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET confirmedLiveStatus='OFFLINE' WHERE id=?", arrayOf(event.streamerId))
++        val captured = dao.findById(event.streamerId)!!
++        val lease = RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!
++        for (enabled in listOf(false, true)) db.withTransaction {
++            dao.setMonitoringEnabled(captured.id, enabled, wall)
++            dao.bumpStreamerMonitorGeneration(captured.id, wall)
++            dao.deletePendingTransition(captured.id)
++        }
++        auditApply(captured, ConfirmedLiveStatus.OFFLINE, com.example.bilimonitor.data.local.TransitionReason.CONFIRMATION_COUNT_REACHED, lease)
++        val current = dao.findById(captured.id)!!
++        assertEquals("status/sessions/generation", "OFFLINE/0/3", "${current.confirmedLiveStatus}/${db.liveSessionDao().listAll().size}/${current.streamerMonitorGeneration}")
++    }
++
++    @Test fun auditFreshSessionReferencesInterval() = runBlocking {
++        val event = seedEvent(73)
++        db.openHelper.writableDatabase.execSQL("UPDATE streamer SET confirmedLiveStatus='UNKNOWN' WHERE id=?", arrayOf(event.streamerId))
++        val captured = db.streamerDao().findById(event.streamerId)!!
++        auditApply(captured, ConfirmedLiveStatus.UNKNOWN, com.example.bilimonitor.data.local.TransitionReason.FIRST_OBSERVATION, RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!)
++        val created = db.liveSessionDao().findActiveOpenSession(captured.id)!!
++        val interval = db.reliableIntervalDao().findActiveByStreamer(captured.stableId)!!
++        assertEquals(created.stableId, interval.sessionStableId)
++        assertEquals("new session references the actual interval", interval.intervalId, created.currentReliableIntervalId)
++    }
++
++    @Test fun auditRecoveredSessionOwnsEvent() = runBlocking {
++        val event = seedEvent(74)
++        val captured = db.streamerDao().findById(event.streamerId)!!
++        auditApply(captured, ConfirmedLiveStatus.LIVE, com.example.bilimonitor.data.local.TransitionReason.RECOVERY_RECONFIRM, RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!)
++        val session = db.liveSessionDao().findActiveOpenSession(captured.id)!!
++        val interval = db.reliableIntervalDao().findActiveByStreamer(captured.stableId)!!
++        val recovery = db.liveEventDao().listAll().single { it.eventType == LiveEventType.LIVE_RECONFIRMED }
++        assertEquals(listOf(session.stableId, session.stableId), listOf(interval.sessionStableId, recovery.sessionStableId))
++    }
++
++    @Test fun auditSkipDoesNotChangeAnotherUidPolicy() = runBlocking {
++        val event = seedEvent(75)
++        val settings = com.example.bilimonitor.data.local.entity.StreamerMonitorPolicyEntity(streamerId = event.streamerId, enabled = true, intervalSeconds = null, notifyStart = true, notifyEnd = true, notifyRound = false, startConfirmationCount = null, endConfirmationCount = null, aggregationEnabledOverride = null, aggregationThresholdOverride = null, overrideQuietHours = null, updatedAt = wall)
++        db.policyDao().upsert(settings)
++        val backup = auditBackup(this)
++        val text = backup.serializeToString(backup.serializeBackup())
++        db.streamerDao().updateIdentity(event.streamerId, 99075, wall)
++        db.policyDao().upsert(settings.copy(notifyStart = false))
++        val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
++        assertEquals(1, ready.conflicts.size)
++        backup.decideAll(ready.restoreRunId, com.example.bilimonitor.data.local.RestoreConflictAction.SKIP)
++        assertEquals(1L, backup.applyRestore(ready.restoreRunId, text).skippedCounts["streamers"])
++        assertEquals("policy on skipped local UID", false, db.policyDao().get(event.streamerId)!!.notifyStart)
++    }
++
++    @Test fun auditUndecidedRestoreDoesNotCommit() = runBlocking {
++        val event = seedEvent(76)
++        val backup = auditBackup(this)
++        val text = backup.serializeToString(backup.serializeBackup())
++        db.streamerDao().updateIdentity(event.streamerId, 99076, wall)
++        val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
++        assertEquals(1, ready.conflicts.size)
++        runCatching { backup.applyRestore(ready.restoreRunId, text) }
++        assertEquals(com.example.bilimonitor.data.local.RestoreRunStatus.WAITING_DECISIONS, db.restoreDao().getRun(ready.restoreRunId)!!.status)
++    }
++
++    @Test fun auditCancelledRestoreStaysCancelled() = runBlocking {
++        seedEvent(77)
++        val backup = auditBackup(this)
++        val text = backup.serializeToString(backup.serializeBackup())
++        val ready = backup.precheck(text) as BackupRepository.PrecheckResult.Ready
++        backup.cancelRun(ready.restoreRunId)
++        runCatching { backup.applyRestore(ready.restoreRunId, text) }
++        assertEquals(com.example.bilimonitor.data.local.RestoreRunStatus.CANCELLED, db.restoreDao().getRun(ready.restoreRunId)!!.status)
++    }
++
++    @Test fun auditAvailableSchemaMatrix() {
++        val assets = InstrumentationRegistry.getInstrumentation().context.assets
++        val folder = "com.example.bilimonitor.data.local.db.AppDatabase"
++        val failures = mutableListOf<String>()
++        for (version in 2..12) {
++            val filename = "audit_from_${version}.db"
++            try {
++                context.deleteDatabase(filename)
++                val json = assets.open("$folder/$version.json").bufferedReader().use { org.json.JSONObject(it.readText()).getJSONObject("database") }
++                android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(filename), null).use { old ->
++                    val entities = json.getJSONArray("entities")
++                    for (index in 0 until entities.length()) {
++                        val definition = entities.getJSONObject(index)
++                        val name = definition.getString("tableName")
++                        old.execSQL(definition.getString("createSql").replace("\u0024{TABLE_NAME}", name))
++                        val indices = definition.getJSONArray("indices")
++                        for (offset in 0 until indices.length()) old.execSQL(indices.getJSONObject(offset).getString("createSql").replace("\u0024{TABLE_NAME}", name))
++                    }
++                    old.version = version
++                }
++                val upgraded = AppDatabaseFactory.createForTest(context, filename)
++                try {
++                    val sql = upgraded.openHelper.writableDatabase
++                    assertEquals(13, sql.version)
++                    sql.query("PRAGMA foreign_key_check").use { assertEquals(0, it.count) }
++                    sql.query("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND sql LIKE '% WHERE %'").use { it.moveToFirst(); assertEquals(16, it.getInt(0)) }
++                } finally { upgraded.close() }
++            } catch (error: Throwable) { failures.add("v$version:${error.message?.take(120)}") }
++            finally { context.deleteDatabase(filename) }
++        }
++        assertEquals(emptyList<String>(), failures)
++    }
++
++    @Test fun auditFreshObservationAfterWallRollback() = runBlocking {
++        val event = seedEvent(79)
++        seedSession(event)
++        val row = createSingleFor(event, com.example.bilimonitor.data.local.NotificationEventType.START_CONFIRMED)
++        withDeliveryGuard { guard ->
++            assertEquals("Ready", guard.prepare(row).javaClass.simpleName)
++            elapsed += 10_000
++            wall -= 3_600_000
++            db.openHelper.writableDatabase.execSQL("UPDATE streamer SET lastConfirmedAt=? WHERE id=?", arrayOf(wall, event.streamerId))
++            assertEquals("a fresh confirmation must release a still-valid notification", "Ready", guard.prepare(row).javaClass.simpleName)
++        }
++    }
++
++    @Test fun auditManualDurationIsNotMonitoredCoverage() = runBlocking {
++        val event = seedEvent(80)
++        assertEquals(CorrectionResult.Applied, auditHistory().createManualSession(event.streamerStableId, wall, wall + 3_600_000L, null, null, null))
++        val series = StatsSeriesRepository(db.liveSessionDao(), db.streamerDao(), clock)
++        val day = series.allBucketValues(StatsGranularity.DAY).single()
++        val totals = series.seriesFor(event.streamerId, StatsGranularity.DAY, day).totals
++        assertEquals(3600L, totals.monitoredSeconds)
++        assertEquals(0L, totals.reliableMonitoredSeconds)
++    }
++
++    @Test fun auditGapEndsAtLastKnownLiveWithTwoConfirmations() = runBlocking {
++        val event = seedEvent(83)
++        seedSession(event)
++        val streamer = db.streamerDao().findById(event.streamerId)!!
++        val lease = RuntimeLockRepository(db.runtimeLockDao(), clock).acquireLease()!!
++        val monitor = auditMonitor()
++        auditApply(streamer, ConfirmedLiveStatus.LIVE, com.example.bilimonitor.data.local.TransitionReason.RECOVERY_RECONFIRM, lease)
++        suspend fun observe(result: ObservationResult, status: ConfirmedLiveStatus?, counting: com.example.bilimonitor.domain.policy.StateConfirmationPolicy.Decision.Counting?, sequence: Long) {
++            val remote = status?.let { com.example.bilimonitor.domain.model.RemoteLiveRoom(streamer.uid, streamer.roomId, null, null, null, null, null, null, null, null, it, true) }
++            monitor.applyObservationOnly(com.example.bilimonitor.domain.model.StreamerObservation(streamer.stableId, streamer.uid, result, wall), remote, counting, sequence, lease.monitorGeneration, lease.fencingToken, policy(4), 1L, expectedIntervalSeconds = 60)
++        }
++        wall += 60_000; elapsed += 60_000
++        observe(ObservationResult.SUCCESS, ConfirmedLiveStatus.LIVE, null, 3)
++        val lastLive = wall
++        wall += 60_000; elapsed += 60_000
++        observe(ObservationResult.NETWORK_ERROR, null, null, 4)
++        org.junit.Assert.assertNull(db.reliableIntervalDao().findActiveByStreamer(streamer.stableId))
++        wall += 4 * 3_600_000; elapsed += 4 * 3_600_000
++        observe(ObservationResult.SUCCESS, ConfirmedLiveStatus.OFFLINE, com.example.bilimonitor.domain.policy.StateConfirmationPolicy.Decision.Counting(com.example.bilimonitor.data.local.PendingTransition.SUSPECTED_OFFLINE, 1), 5)
++        wall += 60_000; elapsed += 60_000
++        monitor.applyConfirmedObservationAtomically(null, com.example.bilimonitor.domain.model.DetectedTransition(streamer.stableId, ConfirmedLiveStatus.LIVE, ConfirmedLiveStatus.OFFLINE, "", 6, streamer.streamerMonitorGeneration, com.example.bilimonitor.data.local.TransitionReason.CONFIRMATION_COUNT_REACHED), com.example.bilimonitor.domain.model.StreamerObservation(streamer.stableId, streamer.uid, ObservationResult.SUCCESS, wall), 6, lease.monitorGeneration, lease.fencingToken, 1L, policy(4), expectedIntervalSeconds = 60)
++        val closed = db.liveSessionDao().findByStableId(event.sessionStableId!!)!!
++        assertEquals("seconds added after the last observed LIVE", 0L, (closed.endTime!! - lastLive) / 1000)
++    }
++
++    @Test fun auditStatsSelectsThisStreamersLatestDay() = runBlocking {
++        val first = seedEvent(81)
++        val second = seedEvent(82)
++        val history = auditHistory()
++        assertEquals(CorrectionResult.Applied, history.createManualSession(first.streamerStableId, wall, wall + 10_000, null, null, null))
++        assertEquals(CorrectionResult.Applied, history.createManualSession(second.streamerStableId, wall + 3 * 86_400_000L, wall + 3 * 86_400_000L + 10_000, null, null, null))
++        val series = StatsSeriesRepository(db.liveSessionDao(), db.streamerDao(), clock)
++        val export = ExportRepository(context, db, RuntimeLockRepository(db.runtimeLockDao(), clock), series, db.logDao(), clock)
++        val vm = com.example.bilimonitor.ui.stats.StreamerStatsViewModel(series, export)
++        vm.load(first.streamerId)
++        val state = kotlinx.coroutines.withTimeout(5_000) { vm.state.first { !it.loading && it.result != null } }
++        assertEquals("default period on a single streamer's stats screen", 1L, state.result!!.totals.sessionCount)
++    }
++
+     @Before
+     fun setUp() {
+         context.deleteDatabase(dbName)

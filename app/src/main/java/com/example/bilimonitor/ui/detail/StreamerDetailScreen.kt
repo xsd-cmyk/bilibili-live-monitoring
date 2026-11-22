@@ -1,5 +1,6 @@
 ﻿package com.example.bilimonitor.ui.detail
 
+import com.example.bilimonitor.ui.common.AppAlertDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -30,10 +31,9 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarOutline
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -151,6 +151,7 @@ private data class LoadedCore(
 @HiltViewModel
 class StreamerDetailViewModel @Inject constructor(
     private val streamerRepository: StreamerRepository,
+    private val names: com.example.bilimonitor.data.repository.StreamerNameRepository,
     private val streamerDao: com.example.bilimonitor.data.local.dao.StreamerDao,
     private val policyDao: com.example.bilimonitor.data.local.dao.PolicyDao,
     private val taxonomyRepository: com.example.bilimonitor.data.repository.TaxonomyRepository,
@@ -391,6 +392,12 @@ class StreamerDetailViewModel @Inject constructor(
         }
     }
 
+    fun unlockName() {
+        viewModelScope.launch {
+            if (streamerRepository.unlockName(currentId)) setMessage("已恢复跟随远程名称，将立即尝试获取")
+        }
+    }
+
     fun rename(name: String) {
         val s = _state.value.streamer ?: return
         viewModelScope.launch {
@@ -402,8 +409,14 @@ class StreamerDetailViewModel @Inject constructor(
 
     fun refreshMetadata() {
         viewModelScope.launch {
+            val result = names.refresh(force = true, onlyId = currentId)
             val ok = streamerRepository.refreshMetadata(currentId)
-            setMessage(if (ok) "资料已刷新" else "刷新失败")
+            val metadata = if (ok) "资料已刷新" else "资料未刷新"
+            setMessage(when {
+                result.retry > 0 -> "$metadata；名称获取失败，稍后自动重试"
+                result.success > 0 -> "$metadata；名称已更新"
+                else -> "$metadata；名称未修改"
+            })
         }
     }
 
@@ -592,7 +605,7 @@ fun StreamerDetailScreen(
             //  - 单独一张卡、左右各占一半：最显眼、点击区域有整个按钮那么大（48dp 高），
             //    而且是**纯新增一行**，下面任何既有信息一格都没被挤掉。
             item {
-                Card {
+                AppCard {
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -641,7 +654,7 @@ fun StreamerDetailScreen(
             }
 
             item {
-                Card {
+                AppCard {
                     // 直播间封面（用户要求：实时封面显示在二级页面，并支持保存到本地）。
                     // 16:9 比例、圆角裁切；无封面时给出明确的占位说明而不是空白。
                     val cover = streamer.coverUrl
@@ -781,7 +794,7 @@ fun StreamerDetailScreen(
             }
 
             item {
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("分组", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
@@ -825,7 +838,7 @@ fun StreamerDetailScreen(
             }) }
 
             item {
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("标签", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
@@ -852,7 +865,7 @@ fun StreamerDetailScreen(
             }
 
             item {
-                Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                AppCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                     Text(
                         "直播记录",
                         // 文字居中（用户要求）：fillMaxWidth 让 Text 占满卡片宽度，
@@ -873,7 +886,7 @@ fun StreamerDetailScreen(
             }
 
             item {
-                Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                AppCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                     Text(
                         "状态历史（最近）",
                         // 文字居中（用户要求）：fillMaxWidth 让 Text 占满卡片宽度，
@@ -886,7 +899,7 @@ fun StreamerDetailScreen(
                 }
             }
             items(state.history, key = { it.historyId }) { h ->
-                Card {
+                AppCard {
                     Row(Modifier.padding(10.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             "${labelOf(h.oldStatus)} → ${labelOf(h.newStatus)}",
@@ -907,7 +920,7 @@ fun StreamerDetailScreen(
     }
 
     if (showDeleteDialog) {
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("删除主播") },
             text = { Text("将停止监控该主播；历史直播记录会保留，可随时重新添加恢复。") },
@@ -922,13 +935,17 @@ fun StreamerDetailScreen(
     }
     if (showRenameDialog) {
         var text by remember { mutableStateOf(state.streamer?.name ?: "") }
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { showRenameDialog = false },
             title = { Text("修改昵称") },
             text = {
-                androidx.compose.material3.OutlinedTextField(
-                    value = text, onValueChange = { text = it }, singleLine = true
-                )
+                Column {
+                    androidx.compose.material3.OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true)
+                    if (state.streamer?.nameLocked == true) TextButton(onClick = {
+                        showRenameDialog = false
+                        viewModel.unlockName()
+                    }) { Text("恢复跟随远程名称") }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -1046,7 +1063,7 @@ private fun <T> TaxonomyPickerDialog(
         else if (name.isNotEmpty() && name !in newNames) newNames = newNames + name
         input = ""
     }
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         // 标题点名"这张卡片"：既交代作用域（只管这一个主播，不是整个库），
         // 也说明它同时管加入与移出。不叫「管理分组」是因为设置页已有一个全局的
@@ -1205,7 +1222,7 @@ private fun PolicyCard(
     var notifyAreaChange by remember(policy?.streamerId, policy?.updatedAt) {
         mutableStateOf(policy?.notifyAreaChange ?: false)
     }
-    Card {
+    AppCard {
         Column(Modifier.padding(14.dp)) {
             Text("监控策略", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
@@ -1354,7 +1371,7 @@ private fun SessionRow(session: LiveSessionEntity) {
     // 场次时间按该场记录的时区显示（库里存了 startTimeZone），
     // 与历史页保持同一口径；为 null 或解析失败时 zoneOf 回退设备时区
     val sessionZone = remember(session.startTimeZone) { zoneOf(session.startTimeZone) }
-    Card {
+    AppCard {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(

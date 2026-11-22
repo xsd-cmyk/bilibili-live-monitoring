@@ -1,7 +1,10 @@
 ﻿package com.example.bilimonitor.background
 
 import com.example.bilimonitor.core.AppClock
+import com.example.bilimonitor.data.local.entity.StreamerEntity
 import com.example.bilimonitor.core.Ids
+import com.example.bilimonitor.data.local.ConfirmedLiveStatus
+import com.example.bilimonitor.domain.policy.RoomBanPolicy
 import com.example.bilimonitor.data.local.AppError
 import com.example.bilimonitor.data.local.GapReason
 import com.example.bilimonitor.data.local.GapScope
@@ -86,8 +89,7 @@ class MonitoringEngine @Inject constructor(
     private val logDao: LogDao,
     private val dbHandle: com.example.bilimonitor.data.local.db.AppDatabase,
     private val clock: AppClock,
-    @Named("appScope") private val scope: CoroutineScope,
-    private val notificationDispatcher: NotificationDispatcher
+    @Named("appScope") private val scope: CoroutineScope
 ) {
     private val tickMutex = Mutex()
     private var heldLease: MonitoringLease? = null
@@ -231,7 +233,7 @@ class MonitoringEngine @Inject constructor(
             )
             streamers.forEach {
                 applySafely(
-                    it.stableId, it.uid,
+                    it,
                     RoomFailureMapping.observationResultOf(breakerFailure.reason), null, snapshot, lease,
                     failure = breakerFailure
                 )
@@ -256,8 +258,6 @@ class MonitoringEngine @Inject constructor(
 
         // ---- 「封禁中」主播的分流与低频复查（用户诉求 1 + 2）----
         //
-        // 封禁状态**独立于** confirmedLiveStatus：它只影响调度与展示，
-        // 不改状态、不产生通知、不碰历史场次（见 MonitorRepository.applyBanState 的说明）。
         // 到期的封禁主播走 `room_init` 复查（唯一能读出 is_locked 的接口）；
         // 未到期的**完全不进入本轮请求**，因此既不会拖慢其他主播，也不会浪费请求。
         val banned = mutableMapOf<String, com.example.bilimonitor.domain.policy.RoomBanState>()
@@ -266,7 +266,12 @@ class MonitoringEngine @Inject constructor(
         }
         // 到期的（含"确认次数已过"的边界）才复查；返回**复查后**的最新封禁集合。
         val bannedNow = refreshDueBanProbes(allStreamers, banned, snapshot, lease).toMutableSet()
-        val streamers = allStreamers.filter { it.stableId !in bannedNow }
+        val streamers = allStreamers.filter { it.stableId !in bannedNow }.mapNotNull { original ->
+            if (original.stableId !in banned) original else streamerDao.findActiveByStableId(original.stableId)?.takeIf {
+                it.monitoringEnabled && it.uid == original.uid && it.streamerMonitorGeneration == original.streamerMonitorGeneration &&
+                    com.example.bilimonitor.domain.policy.RoomBanCodec.decode(it.lastError) == null
+            }
+        }
         if (bannedNow.isNotEmpty()) {
             // ★ 这是"本轮跳过了谁"这一**调度事实**，不是错误 —— 修复前它被记成
             //   `application_error_log` + `AppError.API_REJECTED`（"接口被拒绝"），每轮一条。
@@ -291,8 +296,6 @@ class MonitoringEngine @Inject constructor(
         val checked = streamers.size
 
         val batches = if (streamers.isEmpty()) emptyList() else streamers.chunked(snapshot.batchSize.coerceAtLeast(1))
-        val uidsOfBatch = batches.map { batch -> batch.map { it.uid } }
-        val stableIdsOfBatch = batches.map { batch -> batch.map { it.stableId }.toSet() }
 
         /*
          * ★ 用户诉求 3（本轮最重要的改动）：**只有大面积失败才触发重试与熔断**。
@@ -335,8 +338,7 @@ class MonitoringEngine @Inject constructor(
             // 局部累加变量与账面集合一旦分叉，末轮的比例判定就建立在错误的分子上（缺陷 1）。
             processOutcome(
                 outcome = outcome,
-                stableIds = batch.map { it.stableId },
-                uids = uidsOfBatch[index],
+                targets = batch,
                 snapshot = snapshot,
                 lease = lease,
                 // 第一轮的拆分用**一次性请求**：拆分是"隔离坏房间"的手段，
@@ -380,7 +382,11 @@ class MonitoringEngine @Inject constructor(
                 )
                 forEachBatchWithCooldown(batches.size, snapshot) { index ->
                     val batch = batches[index]
-                    val failedHere = batch.filter { it.stableId in round.failedStableIds }
+                    val failedHere = batch.filter { it.stableId in round.failedStableIds }.mapNotNull { original ->
+                        streamerDao.findActiveByStableId(original.stableId)?.takeIf {
+                            it.uid == original.uid && it.monitoringEnabled && it.streamerMonitorGeneration == original.streamerMonitorGeneration
+                        }
+                    }
                     if (failedHere.isEmpty()) return@forEachBatchWithCooldown
                     // ★ 预算不够再开新的一批就别开：宁可本轮少重试几批，也要把批次循环**之后**
                     //   的收尾跑完（系统级故障通知就在那里，而"不熔断"的语义下没有别的闸门）。
@@ -405,8 +411,7 @@ class MonitoringEngine @Inject constructor(
                     //   于是只要走进重试轮，末轮必然再次越线、必然误报全局降级）。
                     processOutcome(
                         outcome = outcome,
-                        stableIds = failedHere.map { it.stableId },
-                        uids = failedHere.map { it.uid },
+                        targets = failedHere,
                         snapshot = snapshot,
                         lease = lease,
                         fetch = { uids -> fetchOnce(uids, snapshot) },
@@ -521,11 +526,15 @@ class MonitoringEngine @Inject constructor(
         if (banned.isEmpty()) return emptySet()
         val now = clock.nowWall()
         val stillBanned = linkedSetOf<String>()
+        val period = FreshnessPolicy.tickPeriodSeconds(snapshot.mode, snapshot.intervalSeconds)
         var due = 0
         var deferred = 0
         for (streamer in all) {
             val ban = banned[streamer.stableId] ?: continue
             if (com.example.bilimonitor.domain.policy.RoomBanPolicy.shouldSkipRegularCheck(ban, now)) {
+                if (ban.apiMessage != "restored_requires_recheck" && streamer.confirmedLiveStatus != ConfirmedLiveStatus.OFFLINE) {
+                    monitorRepository.applyBanState(streamer, lease, ban, period) {}
+                }
                 stillBanned += streamer.stableId
                 continue
             }
@@ -543,14 +552,8 @@ class MonitoringEngine @Inject constructor(
             }
             when (val outcome = probeBanSafely(roomId)) {
                 is BanProbeOutcome.Failed -> {
-                    // ★「问不出来」绝不等于「没被封禁」：不解除、不新增。
-                    //   与原实现一致地把 previous 原样写回（nextState 规则①返回的就是它），
-                    //   复查时刻**不被推迟** —— 判定与调度语义保持逐字不变。
                     stillBanned += streamer.stableId
-                    monitorRepository.applyBanState(streamer.id, ban)
-                    recordBanProbeFailure(
-                        streamer, roomId, keptBanned = true, failure = outcome.failure, now = now
-                    )
+                    recordBanProbeFailure(streamer, roomId, keptBanned = true, failure = outcome.failure, now = now)
                 }
                 is BanProbeOutcome.Concluded -> {
                     val next = com.example.bilimonitor.domain.policy.RoomBanPolicy.nextState(
@@ -564,16 +567,13 @@ class MonitoringEngine @Inject constructor(
                     banLogGate.clear(streamer.stableId)
                     if (next != null) {
                         stillBanned += streamer.stableId
-                        monitorRepository.applyBanState(streamer.id, next)
-                        // 续期复查：状态未变 → 只写 logcat（修复前这里每轮一条 API_REJECTED）。
-                        noteBanSteady(streamer, next, now)
+                        monitorRepository.applyBanState(streamer, lease, next, period) { noteBanSteady(streamer, next, now) }
                     } else {
                         // 解除封禁：清标记 + 审计留痕（不再占用错误日志）。
-                        monitorRepository.applyBanState(streamer.id, null)
-                        recordBanTransition(
-                            streamer, BanTransition.LIFTED, next = null, now = now,
-                            roomId = roomId, snapshot = snapshot
-                        )
+                        val lifted = monitorRepository.applyBanState(streamer, lease, null, period) {
+                            recordBanTransition(streamer, BanTransition.LIFTED, next = null, now = now, roomId = roomId, snapshot = snapshot)
+                        }
+                        if (!lifted) stillBanned += streamer.stableId
                     }
                 }
             }
@@ -647,19 +647,6 @@ class MonitoringEngine @Inject constructor(
         }
     }
 
-    /**
-     * 常规检查失败后的封禁探针（**首次判定**入口，用户要求"不要每次都多打一次请求"）。
-     *
-     * 触发条件（两选一，见 [com.example.bilimonitor.domain.policy.RoomBanPolicy.shouldProbe]）：
-     *  - 该主播**本轮检查失败** → 探一次 `room_init`。正常情况下零额外请求；
-     *    即使整轮全失败，也受每轮探针预算限制。
-     *  - 该主播**响应里自带明确的封禁标记** → **零请求**直接判定（批量接口文档里就有
-     *    `is_locked` / `lock_till`，有就白拿）。
-     *  - 该主播**本轮成功且没有任何封禁标记** → 若之前有封禁标记则顺带解除（不花请求）。
-     *
-     * 拿不到结论（超时/风控/5xx/解析失败）时**什么都不做** —— 不解除、不新增，
-     * 这正是"绝不把风控/网络异常判成封禁、也绝不据此解除封禁"的落地处。
-     */
     private suspend fun probeBanIfWarranted(
         streamer: com.example.bilimonitor.data.local.entity.StreamerEntity,
         observationResult: ObservationResult,
@@ -685,15 +672,14 @@ class MonitoringEngine @Inject constructor(
                     apiCode = null,
                     apiMessage = "batch_flags"
                 ),
-                snapshot, now
+                snapshot, now, lease
             )
         }
         // ② 明确未封禁且此前也没有封禁标记 → 无需任何动作。
         if (flag == false && previous == null && observationResult == ObservationResult.SUCCESS) return false
-        // ③ 探针门槛：本轮失败才探（正常成功且无标记的主播不花这个请求）。
         val shouldProbe = com.example.bilimonitor.domain.policy.RoomBanPolicy.shouldProbe(
             ban = previous,
-            suspicionRaised = observationResult != ObservationResult.SUCCESS,
+            suspicionRaised = RoomBanPolicy.warrantsProbe(observationResult, streamer.confirmedLiveStatus, remote?.remoteLiveStatus),
             nowWall = now
         )
         if (!shouldProbe) {
@@ -721,7 +707,7 @@ class MonitoringEngine @Inject constructor(
             is BanProbeOutcome.Concluded -> {
                 val probe = outcome.result
                 if (!probe.isLocked && previous == null) return false
-                return persistBan(streamer, previous, probe, snapshot, now)
+                return persistBan(streamer, previous, probe, snapshot, now, lease)
             }
         }
     }
@@ -732,7 +718,7 @@ class MonitoringEngine @Inject constructor(
         previous: com.example.bilimonitor.domain.policy.RoomBanState?,
         probe: com.example.bilimonitor.domain.policy.RoomBanProbeResult,
         snapshot: MonitoringConfigSnapshot,
-        now: Long
+        now: Long, lease: MonitoringLease
     ): Boolean {
         val next = com.example.bilimonitor.domain.policy.RoomBanPolicy.nextState(
             previous = previous,
@@ -741,29 +727,15 @@ class MonitoringEngine @Inject constructor(
             recheckIntervalSeconds = snapshot.banRecheckIntervalSeconds
         )
         val roomId = streamer.roomId ?: streamer.shortRoomId
-        if (next == null) {
-            if (previous == null) return false
-            monitorRepository.applyBanState(streamer.id, null)
+        if (previous == null && next == null) return false
+        monitorRepository.applyBanState(streamer, lease, next, FreshnessPolicy.tickPeriodSeconds(snapshot.mode, snapshot.intervalSeconds)) {
             banLogGate.clear(streamer.stableId)
-            // 解除封禁 = 状态变化 → 审计留痕（不再是 API_REJECTED 的错误记录）。
-            recordBanTransition(
-                streamer, BanTransition.LIFTED, next = null, now = now, roomId = roomId, snapshot = snapshot
-            )
-            return false
+            when (val change = BanLogPolicy.transitionOf(previous, next)) {
+                BanTransition.LIFTED, BanTransition.ENTERED -> recordBanTransition(streamer, change, next, now, roomId, snapshot)
+                else -> if (next != null) noteBanSteady(streamer, next, now)
+            }
         }
-        monitorRepository.applyBanState(streamer.id, next)
-        // 拿到结论 = 这条链路恢复正常：解除重复抑制，下次真出问题仍然值得再记一条。
-        banLogGate.clear(streamer.stableId)
-        when (BanLogPolicy.transitionOf(previous, next)) {
-            // 首次判定为封禁 → 值得留痕的状态变化。
-            BanTransition.ENTERED -> recordBanTransition(
-                streamer, BanTransition.ENTERED, next = next, now = now, roomId = roomId, snapshot = snapshot
-            )
-            // BanTransition.NONE（已有标记、这次只是再次确认）与 LIFTED（上面已处理）：
-            // 都不是变化 → 不写库，只写一行 logcat。
-            else -> noteBanSteady(streamer, next, now)
-        }
-        return true
+        return next != null
     }
 
     /**
@@ -845,59 +817,43 @@ class MonitoringEngine @Inject constructor(
                 "（恢复正常检查间隔 ${snapshot.intervalSeconds}s）"
         }
         android.util.Log.i(TAG, "封禁状态变化 ${action}：stable=${streamer.stableId.takeLast(8)} $detail")
-        runCatching {
-            logDao.insertAudit(
-                AuditLogEntity(
-                    auditId = Ids.newId(), operationId = Ids.newId(), actor = "SYSTEM",
-                    action = action, targetType = "streamer",
-                    targetStableId = streamer.stableId, occurredAt = now,
-                    detailJson = detail.take(LOG_DETAIL_MAX_CHARS)
-                )
+        logDao.insertAudit(
+            AuditLogEntity(
+                auditId = Ids.newId(), operationId = Ids.newId(), actor = "SYSTEM",
+                action = action, targetType = "streamer",
+                targetStableId = streamer.stableId, occurredAt = now,
+                detailJson = detail.take(LOG_DETAIL_MAX_CHARS)
             )
-        }.onFailure {
-            // 留痕写入失败必须自己留痕，否则"状态变化"就真的静默了。
-            // 这里用 DATABASE_ERROR 是诚实的：失败原因就是写库失败。
-            logAppError(AppError.DATABASE_ERROR, "封禁状态留痕写入失败（${action}）：${it.message}")
-        }
-        // ★ 通知用户（2026 复查新增）：封禁/解封原先**只写审计表**，用户不看应用就完全不知道 ——
-        //   而封禁中的主播每 30 分钟才探一次，可能几天都发现不了。只在状态变化时发一条
-        //   （本函数只在 ENTERED/LIFTED 被调用；每轮复查的"仍封禁"走 noteBanSteady，只进 logcat）。
-        //   刻意**不受免打扰抑制**：这不是"主播开播了"那类可以等到天亮的打扰，而是
-        //   "你监控的对象出事/恢复了"的状态事实，且频率极低（进入/解除各一条）。
-        runCatching {
-            val entered = transition == BanTransition.ENTERED
-            val label = next?.let {
-                com.example.bilimonitor.domain.policy.RoomBanPolicy.lockTillLabel(it.lockTill, now)
-            } ?: "已恢复正常检查间隔"
-            com.example.bilimonitor.data.repository.NotificationOutboxWriter.createForChange(
-                db = dbHandle,
-                streamerId = streamer.id,
-                streamerStableId = streamer.stableId,
-                // 封禁不是场次事件：没有 sessionStableId（eventKey 里落成 "-"）
-                sessionStableId = null,
-                eventType = if (entered) {
-                    com.example.bilimonitor.data.local.NotificationEventType.BAN_ENTERED
-                } else {
-                    com.example.bilimonitor.data.local.NotificationEventType.BAN_LIFTED
-                },
-                // changeKey 里带本次转换时刻：解封后**再次**被封（哪怕同为无期限）也必须能发出去，
-                // 只用 lockTill 做键的话第二次会被 eventKey 幂等检查拦掉。
-                changeKey = (if (entered) "entered@" else "lifted@") + now,
-                payloadJson = com.example.bilimonitor.data.repository.NotificationPayloads.encodeBan(
-                    com.example.bilimonitor.data.repository.BanNotificationPayload(
-                        streamerName = streamer.name,
-                        banLabel = label,
-                        entered = entered
-                    )
-                ),
-                now = now,
-                configVersion = snapshot.configVersion,
-                    clock = clock
+        )
+        val entered = transition == BanTransition.ENTERED
+        val label = next?.let {
+            com.example.bilimonitor.domain.policy.RoomBanPolicy.lockTillLabel(it.lockTill, now)
+        } ?: "已恢复正常检查间隔"
+        com.example.bilimonitor.data.repository.NotificationOutboxWriter.createForChange(
+            db = dbHandle,
+            streamerId = streamer.id,
+            streamerStableId = streamer.stableId,
+            // 封禁不是场次事件：没有 sessionStableId（eventKey 里落成 "-"）
+            sessionStableId = null,
+            eventType = if (entered) {
+                com.example.bilimonitor.data.local.NotificationEventType.BAN_ENTERED
+            } else {
+                com.example.bilimonitor.data.local.NotificationEventType.BAN_LIFTED
+            },
+            // changeKey 里带本次转换时刻：解封后**再次**被封（哪怕同为无期限）也必须能发出去，
+            // 只用 lockTill 做键的话第二次会被 eventKey 幂等检查拦掉。
+            changeKey = (if (entered) "entered@" else "lifted@") + now,
+            payloadJson = com.example.bilimonitor.data.repository.NotificationPayloads.encodeBan(
+                com.example.bilimonitor.data.repository.BanNotificationPayload(
+                    streamerName = streamer.name,
+                    banLabel = label,
+                    entered = entered
                 )
-        }.onFailure {
-            // 通知写不进去也必须留痕：否则"用户没收到封禁通知"这件事在库里查不到原因。
-            logAppError(AppError.DATABASE_ERROR, "封禁通知写入失败（${action}）：${it.message}")
-        }
+            ),
+            now = now,
+            configVersion = snapshot.configVersion,
+                clock = clock
+            )
     }
 
     /**
@@ -1189,14 +1145,16 @@ class MonitoringEngine @Inject constructor(
      */
     private suspend fun processOutcome(
         outcome: BatchStatusOutcome,
-        stableIds: List<String>,
-        uids: List<Long>,
+        targets: List<StreamerEntity>,
         snapshot: com.example.bilimonitor.domain.model.MonitoringConfigSnapshot,
         lease: MonitoringLease,
         fetch: suspend (List<Long>) -> BatchStatusOutcome,
         splitBudget: SplitBudget,
         round: RoundFailures
     ) {
+        val byUid = targets.associateBy { it.uid }
+        val uids = targets.map { it.uid }
+        val stableIds = targets.map { it.stableId }
         when (outcome) {
             is BatchStatusOutcome.Failed -> {
                 val failure = outcome.failure
@@ -1213,17 +1171,25 @@ class MonitoringEngine @Inject constructor(
                     // 隔离子批：拿到有效结果的立刻写观察并**从账面回收**（大主播批里有坏房间时，
                     // 同批的正常主播就是这样被救回来的）；剩下的按各自 uid 的真实原因记账。
                     for ((uid, remote) in split.responded) {
-                        val stableId = stableIdFor(uid, stableIds, uids)
-                        applySafely(stableId, uid, ObservationResult.SUCCESS, remote, snapshot, lease)
+                        val target = byUid[uid] ?: continue
+                        val stableId = target.stableId
+                        if (!probeBanIfWarranted(target, ObservationResult.SUCCESS, remote, snapshot, lease)) {
+                            applySafely(target, ObservationResult.SUCCESS, remote, snapshot, lease)
+                        }
                         round.resolve(listOf(stableId))
                     }
                     for ((uid, perUidFailure) in split.failed) {
-                        val stableId = stableIdFor(uid, stableIds, uids)
+                        val target = byUid[uid] ?: continue
+                        val stableId = target.stableId
                         // 用**该 uid 自己**的失败信号，而不是整批第一次请求的那个原因：
                         // 子批重问时它可能已经变成超时/解析失败，那才是这个主播此刻的事实
                         // （主播级标签、detail 与归因因此共用同一个原因）。
+                        if (probeBanIfWarranted(target, RoomFailureMapping.observationResultOf(perUidFailure.reason), null, snapshot, lease)) {
+                            round.resolve(listOf(stableId))
+                            continue
+                        }
                         applySafely(
-                            stableId, uid,
+                            target,
                             RoomFailureMapping.observationResultOf(perUidFailure.reason), null,
                             snapshot, lease, perUidFailure
                         )
@@ -1234,9 +1200,9 @@ class MonitoringEngine @Inject constructor(
                 // 不拆分：整批按同一个结构化原因记录（限流/超时/5xx/明确拒绝在 detail 里可区分）。
                 // 原因与失败主播**同时**登记：归因（主导原因）与分子必须描述同一批人。
                 round.record(failure.reason, stableIds)
-                for ((index, stableId) in stableIds.withIndex()) {
+                for (target in targets) {
                     applySafely(
-                        stableId, uids.getOrNull(index) ?: continue,
+                        target,
                         RoomFailureMapping.observationResultOf(failure.reason), null,
                         snapshot, lease, failure
                     )
@@ -1248,8 +1214,9 @@ class MonitoringEngine @Inject constructor(
                 val response = outcome.response
                 // 整批被服务端拒绝（code != 0）：与"网络失败"是不同事实，必须分开记。
                 findCallFailure(response)?.let { round.observe(it.reason) }
-                for ((index, stableId) in stableIds.withIndex()) {
-                    val uid = uids.getOrNull(index) ?: continue
+                for (target in targets) {
+                    val uid = target.uid
+                    val stableId = target.stableId
                     val remote = response.resultsByUid[uid]
                     val failure = response.failuresByUid[uid]
                     val observationResult = when {
@@ -1278,34 +1245,13 @@ class MonitoringEngine @Inject constructor(
                         // （归因会因此落到 UNKNOWN，而不是被硬塞一个"网络不可用"）。
                         round.recordUnknownReason(listOf(stableId))
                     }
-                    applySafely(
-                        stableId, uid, observationResult, remote, snapshot, lease,
-                        failure = effectiveFailure
-                    )
-                    // ★ 封禁判定（用户诉求 1）：失败 → 探一次 room_init；成功但带封禁标记 → 零请求判定。
-                    //   放在观察写入**之后**：即使探针失败，观察本身也已经如实落库。
-                    if (observationResult != ObservationResult.SUCCESS || remote?.banLocked == true) {
-                        runCatching {
-                            probeBanIfWarranted(
-                                streamerDao.findActiveByStableId(stableId) ?: return@runCatching,
-                                observationResult, remote, snapshot, lease
-                            )
-                        }.onFailure { e ->
-                            // 兜底：封禁判定链路里的**未预期异常**（例如写库失败）。
-                            // ★ 用 UNKNOWN 而不是 API_REJECTED：这里抛异常的是**我们自己**，
-                            //   没有任何接口拒绝过这次调用；把它记成"接口被拒绝"就是撒谎
-                            //   （与缺陷 1 同一类错误）。detail 带原始异常，边界清楚。
-                            // ★ 边沿触发：若异常是持续性的（例如库一直写不进去），每轮都会再抛一次，
-                            //   不做抑制就会重新变成"每分钟一条"。
-                            val signature = "BAN_PATH_EXCEPTION|${e.javaClass.simpleName}|${e.message}"
-                            if (banLogGate.shouldRecord(stableId, signature)) {
-                                logAppError(
-                                    AppError.UNKNOWN,
-                                    "封禁判定失败（不影响本次观察）：stable=${stableId.takeLast(8)} ${e.message}"
-                                )
-                            }
+                    if (remote == null || remote.uid == uid) {
+                        if (probeBanIfWarranted(target, observationResult, remote, snapshot, lease)) {
+                            round.resolve(listOf(stableId))
+                            continue
                         }
                     }
+                    applySafely(target, observationResult, remote, snapshot, lease, failure = effectiveFailure)
                 }
                 return
             }
@@ -1317,9 +1263,9 @@ class MonitoringEngine @Inject constructor(
                     apiMessage = "unknown BatchStatusOutcome"
                 )
                 round.record(failure.reason, stableIds)
-                for ((index, stableId) in stableIds.withIndex()) {
+                for (target in targets) {
                     applySafely(
-                        stableId, uids.getOrNull(index) ?: continue,
+                        target,
                         ObservationResult.INVALID, null, snapshot, lease, failure
                     )
                 }
@@ -1358,7 +1304,7 @@ class MonitoringEngine @Inject constructor(
                     findCallFailure(response)?.let { onFailure(it) }
                     for (uid in part) {
                         val remote = response.resultsByUid[uid]
-                        if (remote != null && remote.uid == uid) {
+                        if (remote != null && remote.uid == uid && remote.remoteStatusValid && remote.remoteLiveStatus != null) {
                             responded[uid] = remote
                         } else {
                             failed[uid] = response.failuresByUid[uid] ?: CallFailure(
@@ -1390,12 +1336,6 @@ class MonitoringEngine @Inject constructor(
         val failed: Map<Long, CallFailure>
     )
 
-    /** uid → 同序 stableId 的查表（列表由同一批主播派生，长度一致）。 */
-    private fun stableIdFor(uid: Long, stableIds: List<String>, uids: List<Long>): String {
-        val index = uids.indexOf(uid)
-        return stableIds.getOrElse(if (index >= 0) index else 0) { stableIds.first() }
-    }
-
     /**
      * 响应里是否带有"整批级别"的失败信号。
      *
@@ -1418,8 +1358,7 @@ class MonitoringEngine @Inject constructor(
     }
 
     private suspend fun applySafely(
-        streamerStableId: String,
-        uid: Long,
+        streamer: StreamerEntity,
         result: ObservationResult,
         remote: RemoteLiveRoom?,
         snapshot: MonitoringConfigSnapshot,
@@ -1429,11 +1368,10 @@ class MonitoringEngine @Inject constructor(
          * 原先这里恒为 null，于是库里所有失败长得一模一样、事后无法定位。
          */
         failure: CallFailure? = null
-    ) {
+    ): Boolean {
         try {
-            val streamer = streamerDao.findActiveByStableId(streamerStableId) ?: return
             val observedAt = clock.nowWall()
-            val observation = StreamerObservation(streamerStableId, uid, result, observedAt)
+            val observation = StreamerObservation(streamer.stableId, streamer.uid, result, observedAt)
             val sequence = streamer.observationSequence + 1
             val pending = streamerDao.getPendingTransition(streamer.id)
             val context = StreamerMonitorContext(
@@ -1448,7 +1386,9 @@ class MonitoringEngine @Inject constructor(
                 pendingLiveConfirmationCount = if (pending?.pendingTransition ==
                     com.example.bilimonitor.data.local.PendingTransition.SUSPECTED_LIVE
                 ) pending.confirmationCount else 0,
-                hasActiveReliableInterval = reliableIntervalDao.findActiveByStreamer(streamer.stableId) != null,
+                hasActiveReliableInterval = reliableIntervalDao.findActiveByStreamer(streamer.stableId) != null &&
+                    MonitorRepository.truncatedEndTime(observedAt, streamer.lastConfirmedAt,
+                        FreshnessPolicy.tickPeriodSeconds(snapshot.mode, snapshot.intervalSeconds)) == observedAt,
                 startConfirmationCount = snapshot.startCountFor(streamer.stableId),
                 endConfirmationCount = snapshot.endCountFor(streamer.stableId)
             )
@@ -1513,6 +1453,7 @@ class MonitoringEngine @Inject constructor(
                     monitorRepository.applyObservationOnly(
                         observation, remote, decision, sequence,
                         lease.monitorGeneration, lease.fencingToken,
+                        requestGeneration = streamer.streamerMonitorGeneration,
                         policy = notificationPolicy, configVersion = snapshot.configVersion,
                         // 数据新鲜度阈值要按**实际**周期抬高（省电模式 ≥15 分钟），
                         // 否则失败观察会把那一列写成 STALE，而界面（用同一个纯函数）说没过期。
@@ -1524,6 +1465,7 @@ class MonitoringEngine @Inject constructor(
                     monitorRepository.applyObservationOnly(
                         observation, remote, null, sequence,
                         lease.monitorGeneration, lease.fencingToken,
+                        requestGeneration = streamer.streamerMonitorGeneration,
                         policy = notificationPolicy, configVersion = snapshot.configVersion,
                         expectedIntervalSeconds = FreshnessPolicy.tickPeriodSeconds(
                             snapshot.mode, snapshot.intervalSeconds
@@ -1551,9 +1493,13 @@ class MonitoringEngine @Inject constructor(
                 ApplyObservationResult.DuplicateOpenSession ->
                     logAppError(AppError.DATABASE_ERROR, "apply duplicate_open_session: 存在重复的 OPEN 场次")
             }
+            return outcome is ApplyObservationResult.Applied
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             // 单主播异常隔离（246.2）。
             logAppError(AppError.UNKNOWN, "applyObservation failed: ${e.message}")
+            return false
         }
     }
 

@@ -1,9 +1,9 @@
 package com.example.bilimonitor.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,547 +11,109 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bilimonitor.data.local.BackgroundKeepAliveChoice
-import com.example.bilimonitor.data.local.MonitoringMode
+import com.example.bilimonitor.ui.common.AppCard
 import com.example.bilimonitor.ui.common.FloatingTopBar
 import com.example.bilimonitor.ui.common.FloatingTopBarTitle
+import com.example.bilimonitor.ui.nav.LocalDockClearance
+
+internal enum class SettingsGroup(val route: String, val title: String, val description: String) {
+    MONITOR("settings/monitor", "监控策略", "运行模式、检查间隔、主播名称和高级请求策略"),
+    NOTICES("settings/notices", "通知设置", "通知有效期、批量合并、免打扰和常驻通知内容"),
+    BACKGROUND("settings/background", "后台运行", "保活方式、电源豁免、锁屏与高级保活")
+}
 
 @Composable
-fun SettingsScreen(
-    onReonboard: () -> Unit,
+internal fun SettingsScreen(
+    onOpenGroup: (SettingsGroup) -> Unit,
     onOpenLogin: () -> Unit = {},
     onOpenData: () -> Unit = {},
     onOpenNotifications: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenAppearance: () -> Unit = {},
     onOpenTaxonomy: () -> Unit = {},
-    // 与 onOpenTaxonomy 同一写法：**给默认值**，这样新增入口不会破坏其它调用方
-    // （任何一个已经在调 SettingsScreen(...) 的地方都不会因为少传这个参数而编译失败）。
     onOpenIconPreset: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
-    val message by viewModel.message.collectAsStateWithLifecycle()
-    val quietHours by viewModel.quietHours.collectAsStateWithLifecycle()
-    val template by viewModel.notificationTemplate.collectAsStateWithLifecycle()
-    // 数据过期提示开关（DataStore 展示偏好，默认开）：与 config 不同源，单独收一条流。
-    val freshnessExpiryHintEnabled by viewModel.freshnessExpiryHintEnabled.collectAsStateWithLifecycle()
-    // 高级保活（Root / Shizuku）
-    val advancedKeepAlive by viewModel.advancedKeepAlive.collectAsStateWithLifecycle()
-    val privilegeEnv by viewModel.privilegeEnv.collectAsStateWithLifecycle()
-    val keepAliveReport by viewModel.keepAliveReport.collectAsStateWithLifecycle()
-    val keepAliveBusy by viewModel.keepAliveBusy.collectAsStateWithLifecycle()
-    val powerExemption by viewModel.powerExemption.collectAsStateWithLifecycle()
-    val wakelockHeld by viewModel.wakelockHeld.collectAsStateWithLifecycle()
-    val wakelockStatus by viewModel.wakelockStatus.collectAsStateWithLifecycle()
-    var showKeepAliveDialog by remember { mutableStateOf(false) }
-    // 通知权限是**系统状态**，不是 Compose 状态：在组合期直接调 checkSelfPermission 的话，
-    // 用户去系统设置里授权/撤销后回到本页，读到的仍是进入页面那一刻的值 —— 页面也不会重组，
-    // 提示就会一直停在错误的旧结论上。每次回到前台（ON_RESUME）重新查一次并写进 state。
-    var notificationsEnabled by remember { mutableStateOf(viewModel.notificationsEnabled()) }
-    LifecycleResumeEffect(Unit) {
-        notificationsEnabled = viewModel.notificationsEnabled()
-        // 电池优化白名单/悬浮窗都是**系统状态**：从系统对话框返回时必须重读，
-        // 否则界面会一直显示"未加入"，用户以为申请没生效又反复点。
-        viewModel.refreshPowerExemption()
-        onPauseOrDispose { }
-    }
-
-    LaunchedEffect(message) {
-        if (message != null) {
-            kotlinx.coroutines.delay(2000)
-            viewModel.message.value = null
-        }
-    }
-
-    Scaffold(
-        topBar = { FloatingTopBar(title = { FloatingTopBarTitle("设置") }) }
-    ) { padding ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // 保存结果反馈（原实现 collect 了 message 并 2 秒后清除，却没有任何渲染点，
-            // 导致"设置已被其他修改更新""参数非法"等结果全部不可见）。
-            // 已有 LaunchedEffect(message) 负责清除，故这里不自带计时。
-            com.example.bilimonitor.ui.common.MessageBanner(
-                message = message,
-                autoDismissMillis = null,
-                onDismiss = { viewModel.message.value = null }
-            )
+    SettingsPage("设置", viewModel) {
+        item("monitor") {
             SettingSectionCard("监控") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("开启监控", fontWeight = FontWeight.Medium)
                         Text(
-                            "关闭后不再执行任何检查",
+                            "关闭后不再检查直播状态",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
+                        enabled = config != null,
                         checked = config?.monitoringEnabled ?: false,
                         onCheckedChange = { viewModel.setMonitoringEnabled(it) }
                     )
                 }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text("运行模式", fontWeight = FontWeight.Medium)
-                listOf(
-                    MonitoringMode.REALTIME to "实时监控（前台服务，锁屏实时会增加耗电）",
-                    MonitoringMode.POWER_SAVING to "省电监控（系统调度，约 15 分钟以上）",
-                    MonitoringMode.MANUAL to "手动（仅打开 App 时检查）"
-                ).forEach { (mode, label) ->
-                    // 整行可点：RadioButton 本体只有 ~20dp，只让它响应点击会让人以为
-                    // "点文字没反应"，读屏下也不够 48dp 触控区
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectable(
-                                selected = config?.mode == mode,
-                                role = Role.RadioButton,
-                                onClick = { viewModel.update { it.copy(mode = mode) } }
-                            )
-                    ) {
-                        // onClick = null：点击交给整行，避免两个可点区域
-                        RadioButton(selected = config?.mode == mode, onClick = null)
-                        Text(label, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                // 检查间隔：下限 30s、新装默认 60s（用户要求）。
-                // 这三处必须同步 —— 设置页范围（本控件）/ 仓储 merge() 的校验下限 / DbSeed 的种子值，
-                // 任何一处不同步都会出现"设置页显示的值"与"实际生效的值"互相打脸。
-                // `?: 60` 只是 config 还没从库里发射（null）时的展示兜底，取种子同值以免数字跳变。
-                NumberInputSetting(
-                    label = "检查间隔（秒，30–3600）",
-                    value = config?.intervalSeconds ?: 60,
-                    validRange = 30..3600,
-                    onCommit = { viewModel.update { s -> s.copy(intervalSeconds = it) } }
-                )
-                StepperSetting(
-                    label = "开播确认次数：${config?.startConfirmationCount ?: 1}（默认 1，立即通知）",
-                    value = config?.startConfirmationCount ?: 1,
-                    onCommit = { viewModel.update { s -> s.copy(startConfirmationCount = it) } }
-                )
-                StepperSetting(
-                    label = "关播确认次数：${config?.endConfirmationCount ?: 1}（默认 1，防误报）",
-                    value = config?.endConfirmationCount ?: 1,
-                    onCommit = { viewModel.update { s -> s.copy(endConfirmationCount = it) } }
-                )
-            }
-
-            NotificationDeliverySettingsCard()
-
-            SettingSectionCard("通知聚合") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("批量开播合并通知", fontWeight = FontWeight.Medium)
-                        Text(
-                            // 措辞要点：阈值是"超过多少位才合并"，不是"每次合并多少位" ——
-                            // 用户明确纠正过这个区别，文案不许再写成后者。
-                            "同一批（几秒内）需要通知的主播「超过」下面的阈值时，" +
-                                "把这一批「全部」合并成一条通知；不超过则逐个单独发",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = config?.aggregationEnabled ?: true,
-                        onCheckedChange = { viewModel.update { s -> s.copy(aggregationEnabled = it) } }
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("批量下播合并通知", fontWeight = FontWeight.Medium)
-                        Text(
-                            // 与开播方向同一套语义（阈值 = 触发条件），并点明两者互相独立：
-                            // 它们各自一个聚合窗口，同一批里既有开播又有下播也不会串在一起。
-                            "同一批（几秒内）下播的主播「超过」下面的阈值时，把这一批「全部」合并成一条通知；" +
-                                "与开播合并各自成窗、互不影响",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = config?.endAggregationEnabled ?: true,
-                        onCheckedChange = { viewModel.update { s -> s.copy(endAggregationEnabled = it) } }
-                    )
-                }
-                StepperSetting(
-                    // 措辞与开关说明一致：阈值 = "超过多少位就合并"，不是"每次合并多少位"。
-                    label = "超过 ${config?.aggregationThreshold ?: 4} 位主播需要通知时合并" +
-                        "（当前 ${config?.aggregationThreshold ?: 4}）",
-                    value = config?.aggregationThreshold ?: 4,
-                    onCommit = { viewModel.update { s -> s.copy(aggregationThreshold = it) } }
-                )
-            }
-
-            // 免打扰时段（原规范 22.3）：规格要求可配、默认关。此前完全没有实现。
-            SettingSectionCard("免打扰时段") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("开启免打扰", fontWeight = FontWeight.Medium)
-                        Text(
-                            "时段内不发送开播/关播通知；场次与历史照常记录",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = quietHours.enabled,
-                        onCheckedChange = { on ->
-                            viewModel.setQuietHours(on, quietHours.startMinutes, quietHours.endMinutes)
-                        }
-                    )
-                }
-                if (quietHours.enabled) {
-                    // 起止相同的历史数据（本修复之前存下的）也要如实说明它不生效 ——
-                    // 否则用户看着"已开启"却永远收不到抑制效果，只能怀疑是应用坏了。
-                    val savedZeroLength = quietHours.startMinutes == quietHours.endMinutes
-                    Text(
-                        "当前时段：${QuietHoursPolicyFormat(quietHours.startMinutes)}–" +
-                            "${QuietHoursPolicyFormat(quietHours.endMinutes)}（可跨午夜）" +
-                            if (savedZeroLength) "　起止相同 = 未设置，当前不会抑制任何通知" else "",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    var startText by remember(quietHours.startMinutes) {
-                        mutableStateOf(QuietHoursPolicyFormat(quietHours.startMinutes))
-                    }
-                    var endText by remember(quietHours.endMinutes) {
-                        mutableStateOf(QuietHoursPolicyFormat(quietHours.endMinutes))
-                    }
-                    // 两个输入框共用一个提交入口：任一字段点「保存」时都提交**两者当前输入的内容**。
-                    // 原实现各自提交时只读取"另一个字段上一次已保存的值"，
-                    // 于是改了「结束」再改「开始」，结束时间会被回滚成旧值。
-                    val commitBoth = {
-                        val s = parseTimeOfDay(startText)
-                        val e = parseTimeOfDay(endText)
-                        // ★ 起止相同 = 零长度时段，策略层明确按"未配置"处理
-                        //   （QuietHoursPolicy.contains 在 start == end 时恒返回 false），
-                        //   而这里原先照存不误 —— 界面显示"免打扰已开启：23:00–23:00"、
-                        //   提示"已开启"，实际一条通知都不会被抑制（复查发现的缺陷）。
-                        //   直接拒绝写入，并在下面给出原因。
-                        if (s != null && e != null && s != e) viewModel.setQuietHours(true, s, e)
-                    }
-                    TimeOfDayInput(
-                        label = "开始",
-                        value = startText,
-                        onValueChange = { startText = it },
-                        onCommit = commitBoth
-                    )
-                    TimeOfDayInput(
-                        label = "结束",
-                        value = endText,
-                        onValueChange = { endText = it },
-                        onCommit = commitBoth
-                    )
-                    val startBad = parseTimeOfDay(startText) == null
-                    val endBad = parseTimeOfDay(endText) == null
-                    val sameBad = !startBad && !endBad &&
-                        parseTimeOfDay(startText) == parseTimeOfDay(endText)
-                    if (startBad || endBad || sameBad) {
-                        Text(
-                            when {
-                                startBad && endBad -> "开始与结束时间格式应为 HH:mm（如 23:00）"
-                                startBad -> "开始时间格式应为 HH:mm（如 23:00）"
-                                endBad -> "结束时间格式应为 HH:mm（如 07:00）"
-                                else -> "开始与结束不能相同：起止相同等于未设置，免打扰不会生效"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    Text(
-                        "跨午夜无需特殊设置：例如 23:00–07:00 即表示当天 23:00 到次日 07:00。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                SettingsGroup.entries.forEach { group ->
+                    SettingsEntry(group.title, group.description) { onOpenGroup(group) }
                 }
             }
-
-            SettingSectionCard("后台保活") {
-                Text(
-                    keepAliveLabel(config?.backgroundKeepAliveChoice),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                // 选择了无障碍保活时，展示**实际**开启状态与跳转入口
-                // （规格 0.6.47.2：不得显示用户选择暗示的乐观状态）。
-                // 双保险模式同样要展示 —— 无障碍那一半失效时用户必须能立刻看到并去重新开启。
-                if (com.example.bilimonitor.background.MonitoringController
-                        .accessibilitySelected(config?.backgroundKeepAliveChoice)
-                ) {
-                    Spacer(Modifier.height(8.dp))
-                    com.example.bilimonitor.ui.common.AccessibilityEnableRow()
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { showKeepAliveDialog = true }) { Text("修改保活方式") }
-                    TextButton(onClick = onReonboard) { Text("查看说明") }
-                }
-                if (!notificationsEnabled) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "通知权限未授予：后台仍可监控，但无法发出通知",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
-            // 高级保活（Root / Shizuku）：用户要求的两档提权保活。
-            // 放在「后台保活」之后，因为它是"在已选保活方式之上再加一层"。
-            AdvancedKeepAliveCard(
-                wakelockEnabled = advancedKeepAlive.wakelockEnabled,
-                wakelockHeld = wakelockHeld,
-                wakelockStatus = wakelockStatus,
-                currentLevel = advancedKeepAlive.privilegeLevel,
-                power = powerExemption,
-                onRequestIgnoreBattery = { viewModel.requestIgnoreBatteryOptimizations() },
-                onOpenAutoStart = { viewModel.openAutoStartSettings() },
-                onOpenExactAlarm = { viewModel.openExactAlarmSettings() },
-                env = privilegeEnv,
-                report = keepAliveReport,
-                busy = keepAliveBusy,
-                onToggleWakelock = { viewModel.setAdvancedWakelock(it) },
-                onDetect = { viewModel.refreshPrivilegeEnvironment(true) },
-                onRequestShizuku = { viewModel.requestShizukuPermission() },
-                onApply = { viewModel.applyAdvancedKeepAlive(it) },
-                onRevert = { viewModel.revertAdvancedKeepAlive() },
-                onProbe = { viewModel.probeAdvancedStatus() }
-            )
-
-            // 前台常驻通知的内容可自定义（用户要求）。
-            // 只在"确实会用前台保活"时才显示这一块，避免给不用它的人增加噪声。
-            if (com.example.bilimonitor.background.MonitoringController
-                    .foregroundKeepAliveSelected(config?.backgroundKeepAliveChoice)
-            ) {
-                NotificationContentCard(
-                    template = template,
-                    onSave = { title, text -> viewModel.saveNotificationTemplate(title, text) },
-                    onReset = { viewModel.resetNotificationTemplate() }
-                )
-            }
-
-            SettingSectionCard("高级请求策略") {
-                NumberInputSetting(
-                    label = "单批主播数（10–100）",
-                    value = config?.batchSize ?: 50,
-                    validRange = 10..100,
-                    onCommit = { viewModel.update { s -> s.copy(batchSize = it) } }
-                )
-                NumberInputSetting(
-                    label = "并发批次数（1–16）",
-                    value = config?.maxConcurrency ?: 4,
-                    validRange = 1..16,
-                    onCommit = { viewModel.update { s -> s.copy(maxConcurrency = it) } }
-                )
-                // 批次间隔：新装默认 5s（用户要求）。`?: 5` 是 config 为 null 时的展示兜底，
-                // 必须与 DbSeed 的种子值一致（理由同「检查间隔」）。单位是秒，引擎按 ms 使用。
-                NumberInputSetting(
-                    label = "批次间隔（秒，0–300）",
-                    value = config?.batchCooldownSeconds ?: 5,
-                    validRange = 0..300,
-                    onCommit = { viewModel.update { s -> s.copy(batchCooldownSeconds = it) } }
-                )
-                // 请求超时：新装默认 8s（用户要求），兜底与种子同值。
-                // 单位是秒；引擎侧按 `timeoutSeconds * 1000 + 5000` 作为单批预算（秒 → 毫秒）。
-                NumberInputSetting(
-                    label = "请求超时（秒，5–60）",
-                    value = config?.timeoutSeconds ?: 8,
-                    validRange = 5..60,
-                    onCommit = { viewModel.update { s -> s.copy(timeoutSeconds = it) } }
-                )
-                StepperSetting(
-                    label = "最大重试次数：${config?.maxRetries ?: 2}（0–5）",
-                    value = config?.maxRetries ?: 2,
-                    min = 0,
-                    max = 5,
-                    onCommit = { viewModel.update { s -> s.copy(maxRetries = it) } }
-                )
-                StepperSetting(
-                    label = "熔断阈值：连续 ${config?.circuitBreakerThreshold ?: 3} 次失败后暂停请求",
-                    value = config?.circuitBreakerThreshold ?: 3,
-                    min = 1,
-                    max = 10,
-                    onCommit = { viewModel.update { s -> s.copy(circuitBreakerThreshold = it) } }
-                )
-                // ★ 用户诉求：一个坏房间不得拖垮全体检测。
-                //   下面这一项决定"这一轮要不要进入重试与熔断"：只有失败占比**超过**它才触发；
-                //   少数主播失败（例如一个被封禁的房间）不重试、不熔断，其余主播照常检测。
-                //   范围 1–100 与 ConfigRepository.merge 的校验、RoundFailureRatio.THRESHOLD_RANGE 三处同步。
-                NumberInputSetting(
-                    label = "触发重试/熔断的最小失败比例（%，1–100）",
-                    value = config?.retryFailureRatioPercent
-                        ?: com.example.bilimonitor.domain.policy.RoundFailureRatio.DEFAULT_THRESHOLD_PERCENT,
-                    validRange = com.example.bilimonitor.domain.policy.RoundFailureRatio.THRESHOLD_RANGE,
-                    onCommit = { viewModel.update { s -> s.copy(retryFailureRatioPercent = it) } }
-                )
-                Text(
-                    "本轮失败主播占比超过该比例才重试并计入熔断；低于它时只记录失败，" +
-                        "不重试、不熔断，其他主播照常检测。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                // ★ 「封禁中」主播的复查间隔：封禁判定依据 room_init 的 is_locked（公开接口，免登录），
-                //   未解除期间按这个间隔低频复查，解封后立即恢复正常间隔。
-                //   范围 60–86400 与 ConfigRepository.merge、RoomBanPolicy.RECHECK_RANGE 三处同步。
-                NumberInputSetting(
-                    label = "封禁中的检查间隔（秒，60–86400）",
-                    value = config?.banRecheckIntervalSeconds
-                        ?: com.example.bilimonitor.domain.policy.RoomBanPolicy.DEFAULT_RECHECK_SECONDS,
-                    validRange = com.example.bilimonitor.domain.policy.RoomBanPolicy.RECHECK_RANGE,
-                    onCommit = { viewModel.update { s -> s.copy(banRecheckIntervalSeconds = it) } }
-                )
-                Text(
-                    "封禁中的主播按此间隔复查一次（默认 1800 秒 = 30 分钟），不再参与每轮常规检查；" +
-                        "解封后自动恢复正常间隔。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                // ★ 「开启数据过期提示」（用户要求：高级设置里可开关，**默认开启**）。
-                //   它只决定首页卡片要不要追加「· 数据过期」这一个标记：
-                //   时间行（「N 分钟前」）无论开关如何都会显示 —— 用户明确要求"仍显示时间，
-                //   方便看到目前状态"。存放位置是 DataStore 展示偏好（AppearanceSettingsRepository），
-                //   不是 monitoring_config：纯展示开关，塞进配置表要动 schema/迁移/备份/诊断四处。
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("开启数据过期提示", fontWeight = FontWeight.Medium)
-                        Text(
-                            "数据超过阈值没有更新时，在首页卡片上标注「数据过期」；关闭后不标注，" +
-                                "但仍显示上次检查时间",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = freshnessExpiryHintEnabled,
-                        onCheckedChange = { viewModel.setFreshnessExpiryHint(it) }
-                    )
-                }
-                // ★ 数据过期阈值（用户要求：分钟粒度输入，1–1440）。
-                //   **复用既有的 `freshnessStaleSeconds`（秒）**，不新增任何字段 ——
-                //   它已经是唯一生效的阈值（引擎判 FRESH/STALE 用的就是它），再加一个
-                //   "过期阈值"只会出现两个互相打架的阈值；复用则是零迁移：
-                //   列已存在、ConfigUpdate 已支持、校验已有（30–86400 秒）、备份 DTO 与诊断导出都已带上。
-                //   界面用**分钟**：提交时 ×60、展示时秒 → 分钟（向上取整，见 FreshnessPolicy.thresholdMinutesOf）。
-                //   已知取舍：既有的 30–59 秒无法用整分钟表达，界面会显示成 1 分钟（不精确，
-                //   但填进合法范围、且用户不点「保存」就不会写库）。
-                NumberInputSetting(
-                    label = "数据过期阈值（分钟，1–1440）",
-                    value = com.example.bilimonitor.domain.policy.FreshnessPolicy.thresholdMinutesOf(
-                        config?.freshnessStaleSeconds
-                            ?: com.example.bilimonitor.domain.policy.FreshnessPolicy.DEFAULT_THRESHOLD_SECONDS
-                    ),
-                    validRange = com.example.bilimonitor.domain.policy.FreshnessPolicy.THRESHOLD_MINUTES_RANGE,
-                    onCommit = { minutes ->
-                        viewModel.update { s ->
-                            s.copy(
-                                freshnessStaleSeconds =
-                                    com.example.bilimonitor.domain.policy.FreshnessPolicy
-                                        .thresholdSecondsOf(minutes)
-                            )
-                        }
-                    }
-                )
-                Text(
-                    "默认 5 分钟。超过该时长没有成功确认过状态就标注「数据过期」；" +
-                        "实际生效的阈值不会小于监控周期的 2 倍 —— 省电模式周期 15 分钟起，" +
-                        "因此那里的阈值至少按 30 分钟算，否则会永远显示过期。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                // ★ 熔断开关（用户诉求：给熔断加一个开关）。
-                //   默认 **开**：新开关的默认值必须保持"引入它之前"的既有行为，
-                //   所以 checked 的兜底是 true —— 与实体默认值、DDL 的 `DEFAULT 1` 三处一致。
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("启用熔断", fontWeight = FontWeight.Medium)
-                        Text(
-                            "连续失败达到阈值后暂停请求，等过了下面的重试间隔再尝试恢复检测；" +
-                                "关闭后失败的批次会一直重试、继续请求，不再暂停。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = config?.circuitBreakerEnabled ?: true,
-                        onCheckedChange = { viewModel.update { s -> s.copy(circuitBreakerEnabled = it) } }
-                    )
-                }
-                // ★ 熔断后的恢复检测间隔（用户诉求：这个间隔要能调）。
-                //   **复用既有的 `circuitBreakerRecoverySeconds`（秒）**，不新增任何字段 ——
-                //   它本来就是"熔断打开后等多久再尝试检测"，此前的问题只是**设置页改不了**
-                //   （唯一写途径是备份恢复），于是把它开放出来即可，零迁移、零新口径。
-                //   单位就是**秒**，提交时不做 ×60 之类换算。
-                //   范围 1–3600 与 ConfigRepository.merge 的 `cbRecovery` 校验逐字同步
-                //   （只改一处会出现"界面能填、保存却报参数非法"的割裂）。
-                //   展示兜底 `?: 60` 必须与 DbSeed 的种子值一致（新装默认 60 秒 = 1 分钟）。
-                NumberInputSetting(
-                    label = "熔断后重试间隔（秒，1–3600，默认 60 = 1 分钟）",
-                    value = config?.circuitBreakerRecoverySeconds ?: 60,
-                    validRange = 1..3600,
-                    onCommit = { viewModel.update { s -> s.copy(circuitBreakerRecoverySeconds = it) } }
-                )
-                Text(
-                    "熔断打开后等这么久再尝试恢复检测（默认 60 秒 = 1 分钟）；" +
-                        "到时先试一批，成功就立刻恢复正常检测。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    "全部配置项均已在监控引擎中生效；修改后立即作用于下一次检查。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            // 用户反馈：「账号与数据」一张卡塞了 5 个入口，界面被挤变形。
-            // 拆成三张语义清晰的卡，并且**统一**每个入口的样式（整行 OutlinedButton + 一行说明），
-            // 而不是原来那种"有的 Button、有的 OutlinedButton、还有一行放两个"的混排。
-            SettingSectionCard("账号") {
+        }
+        item("appearance") {
+            SettingSectionCard("外观") {
                 SettingsEntry(
-                    title = "B 站账号 / 关注导入",
-                    description = "登录后可导入关注列表；不登录也能正常监控",
-                    onClick = onOpenLogin
+                    title = "外观与主题",
+                    description = "名称与图标、主题色、背景图、卡片、夜间模式、底部导航",
+                    onClick = onOpenAppearance
+                )
+                // 「更换应用图标」放在这一张卡里，而不是自己新开一张：
+                //  1. 它是**纯外观偏好**（不影响监控、通知、数据任何一条业务链路），
+                //     与同一张卡里的名称/主题色/背景图是同一类东西；
+                //  2. 设置页此前已经被用户吐槽过"入口太散"（见上方「数据」卡里的同款取舍）——
+                //     为一个入口新开一张卡，只会让页面又多一段只有一行的高度、更难找；
+                //  3. 「外观」卡原本只有一行，加进来正好成了一个像样的分组。
+                // 注意与「外观与主题 → 应用图标」区分：那一项是上传自定义图片做**桌面快捷方式**，
+                // 这里换的是应用**预设图标清单**，所以描述刻意写成"从预设图片中选择"。
+                SettingsEntry(
+                    title = "更换应用图标",
+                    description = "从预设图片中选择应用图标",
+                    onClick = onOpenIconPreset
                 )
             }
-
+        }
+        item("data") {
             SettingSectionCard("数据") {
                 // 标签 / 分组放在「数据」而不是新开一张卡：它们和这里已有的三项是**同一类**东西
                 // —— 用户自己积累、又需要单独维护的本机数据（备份/恢复/导出处理的是"整库数据"，
@@ -578,30 +140,17 @@ fun SettingsScreen(
                     onClick = onOpenDiagnostics
                 )
             }
-
-            // 外观相关集中在一处（用户要求：不要把软件的主题选项都塞进"自定义图标和名称"里）。
-            // 入口名改为「外观与主题」，与屏幕内的分卡一致；名称/图标只是其中一项。
-            SettingSectionCard("外观") {
+        }
+        item("account") {
+            SettingSectionCard("账号") {
                 SettingsEntry(
-                    title = "外观与主题",
-                    description = "名称与图标、主题色、背景图、卡片、夜间模式、底部导航",
-                    onClick = onOpenAppearance
-                )
-                // 「更换应用图标」放在这一张卡里，而不是自己新开一张：
-                //  1. 它是**纯外观偏好**（不影响监控、通知、数据任何一条业务链路），
-                //     与同一张卡里的名称/主题色/背景图是同一类东西；
-                //  2. 设置页此前已经被用户吐槽过"入口太散"（见上方「数据」卡里的同款取舍）——
-                //     为一个入口新开一张卡，只会让页面又多一段只有一行的高度、更难找；
-                //  3. 「外观」卡原本只有一行，加进来正好成了一个像样的分组。
-                // 注意与「外观与主题 → 应用图标」区分：那一项是上传自定义图片做**桌面快捷方式**，
-                // 这里换的是应用**预设图标清单**，所以描述刻意写成"从预设图片中选择"。
-                SettingsEntry(
-                    title = "更换应用图标",
-                    description = "从预设图片中选择应用图标",
-                    onClick = onOpenIconPreset
+                    title = "B 站账号 / 关注导入",
+                    description = "登录后可导入关注列表；不登录也能正常监控",
+                    onClick = onOpenLogin
                 )
             }
-
+        }
+        item("about") {
             SettingSectionCard("关于") {
                 // 版本号从包信息读取，避免与 build.gradle.kts 的 versionName 脱节
                 // （此前硬编码 v1.0，而 versionName 已升到 1.1）。
@@ -623,77 +172,31 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Spacer(Modifier.height(24.dp))
         }
     }
+}
 
-    if (showKeepAliveDialog) {
-        var selected by remember { mutableStateOf(config?.backgroundKeepAliveChoice ?: BackgroundKeepAliveChoice.UNSET) }
-        var acknowledged by remember {
-            mutableStateOf(config?.noGuaranteeAcknowledged ?: false)
+@Composable
+internal fun SettingsPage(
+    title: String, viewModel: SettingsViewModel, onBack: (() -> Unit)? = null,
+    content: LazyListScope.() -> Unit
+) {
+    val message by viewModel.message.collectAsStateWithLifecycle()
+    val clearance = if (onBack == null) LocalDockClearance.current ?: 24.dp else 16.dp
+    Scaffold(topBar = {
+        FloatingTopBar(title = { FloatingTopBarTitle(title) }, navigationIcon = {
+            if (onBack != null) IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
+        })
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            com.example.bilimonitor.ui.common.MessageBanner(message = message, autoDismissMillis = 2000L,
+                onDismiss = { viewModel.message.value = null })
+            LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = clearance + 16.dp),
+                content = content)
         }
-        AlertDialog(
-            onDismissRequest = { showKeepAliveDialog = false },
-            title = { Text("选择后台保活方式") },
-            text = {
-                Column {
-                    listOf(
-                        BackgroundKeepAliveChoice.FOREGROUND_NOTIFICATION to "前台常驻通知（推荐）",
-                        BackgroundKeepAliveChoice.ACCESSIBILITY to "无障碍服务（实验性）",
-                        // 双保险（用户要求）：无障碍打开之后仍可同时启用前台通知保活。
-                        // 两种机制互不冲突 —— 无障碍让系统不容易回收进程，前台服务保证实时循环，
-                        // 叠加起来存活率最高（代价是多一条常驻通知）。
-                        BackgroundKeepAliveChoice.ACCESSIBILITY_AND_FOREGROUND to
-                            "无障碍服务 + 前台常驻通知（双保险）",
-                        BackgroundKeepAliveChoice.NO_GUARANTEE to "不启用保活（可能漏掉通知）"
-                    ).forEach { (choice, label) ->
-                        // 整行可点（理由同"运行模式"的单选项）
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .selectable(
-                                    selected = selected == choice,
-                                    role = Role.RadioButton,
-                                    onClick = { selected = choice }
-                                )
-                        ) {
-                            RadioButton(selected = selected == choice, onClick = null)
-                            Text(label)
-                        }
-                    }
-                    if (selected == BackgroundKeepAliveChoice.ACCESSIBILITY ||
-                        selected == BackgroundKeepAliveChoice.ACCESSIBILITY_AND_FOREGROUND
-                    ) {
-                        Text(
-                            "无障碍服务需要在系统设置里手动开启；双保险模式下会同时保留一条前台常驻通知。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (selected == BackgroundKeepAliveChoice.NO_GUARANTEE) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            androidx.compose.material3.Checkbox(
-                                checked = acknowledged,
-                                onCheckedChange = { acknowledged = it }
-                            )
-                            Text("我了解可能漏掉通知")
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.changeKeepAliveChoice(selected, acknowledged)
-                        showKeepAliveDialog = false
-                    },
-                    enabled = selected != BackgroundKeepAliveChoice.UNSET &&
-                        !(selected == BackgroundKeepAliveChoice.NO_GUARANTEE && !acknowledged)
-                ) { Text("保存") }
-            },
-            dismissButton = { TextButton(onClick = { showKeepAliveDialog = false }) { Text("取消") } }
-        )
     }
 }
 
@@ -709,13 +212,13 @@ fun SettingsScreen(
  *     而常驻通知"难看一次要看很久"，所以宁可提前告诉用户，也不让他写完才发现。
  */
 @Composable
-private fun NotificationContentCard(
+internal fun NotificationContentCard(
     template: com.example.bilimonitor.data.repository.ForegroundNotificationTemplate,
     onSave: (title: String, text: String) -> Unit,
     onReset: () -> Unit
 ) {
-    var title by remember(template.title) { mutableStateOf(template.title) }
-    var text by remember(template.text) { mutableStateOf(template.text) }
+    var title by rememberSaveable(template.title) { mutableStateOf(template.title) }
+    var text by rememberSaveable(template.text) { mutableStateOf(template.text) }
     // ★ 预览必须走**保存时同一套规整**（换行→空格、trim、按上限截断），否则预览不是所见即所得：
     //   原先直接渲染原文，输入 60 字时预览显示 60 字，保存后系统里只剩 40 字，且没有任何提示
     //   （复查发现的缺陷）。规整函数与 NotificationSettingsRepository.set 用的是同两个。
@@ -760,7 +263,7 @@ private fun NotificationContentCard(
         )
         Spacer(Modifier.height(10.dp))
         // 预览：用真实的渲染函数 + 示例数字（12 位在监控、3 位在直播）
-        Card {
+        AppCard {
             Column(Modifier.padding(10.dp)) {
                 Text(
                     "预览（示例：12 位在监控、3 位在直播）" +
@@ -791,32 +294,26 @@ private fun NotificationContentCard(
  */
 @Composable
 private fun SettingsEntry(title: String, description: String, onClick: () -> Unit) {
-    androidx.compose.material3.Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    Row(
+        Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    description,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            // 用文本箭头而不是 Icons.*：这套依赖里可用图标集不稳定，
-            // 一个入口行没必要为图标名承担编译风险。
-            Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                description,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
+        // 用文本箭头而不是 Icons.*：这套依赖里可用图标集不稳定，
+        // 一个入口行没必要为图标名承担编译风险。
+        Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
-private fun keepAliveLabel(choice: BackgroundKeepAliveChoice?): String = when (choice) {    BackgroundKeepAliveChoice.FOREGROUND_NOTIFICATION -> "当前：前台常驻通知"
+internal fun keepAliveLabel(choice: BackgroundKeepAliveChoice?): String = when (choice) {
+    BackgroundKeepAliveChoice.FOREGROUND_NOTIFICATION -> "当前：前台常驻通知"
     BackgroundKeepAliveChoice.ACCESSIBILITY -> "当前：无障碍服务（实验性）"
     BackgroundKeepAliveChoice.ACCESSIBILITY_AND_FOREGROUND -> "当前：无障碍服务 + 前台常驻通知（双保险）"
     BackgroundKeepAliveChoice.NO_GUARANTEE -> "当前：不启用保活"
@@ -824,10 +321,10 @@ private fun keepAliveLabel(choice: BackgroundKeepAliveChoice?): String = when (c
 }
 
 @Composable
-private fun SettingSectionCard(title: String, content: @Composable () -> Unit) {
+internal fun SettingSectionCard(title: String, content: @Composable () -> Unit) {
     // fillMaxWidth 必须有：Card 默认按内容宽度包裹，内容短的卡片（如「关于」）会明显比
     // 其它卡片窄一截，看起来像没对齐（用户反馈）。这一处修好，所有分节卡片一起对齐。
-    Card(Modifier.fillMaxWidth()) {
+    AppCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
@@ -840,13 +337,14 @@ private fun SettingSectionCard(title: String, content: @Composable () -> Unit) {
  * 数值输入设置项（用户定稿：不用滑块）——数字键盘输入 + 保存按钮，范围外禁用保存。
  */
 @Composable
-private fun NumberInputSetting(
+internal fun NumberInputSetting(
     label: String,
     value: Int,
     validRange: IntRange,
+    strictInput: Boolean = false,
     onCommit: (Int) -> Unit
 ) {
-    var text by remember(value) { mutableStateOf(value.toString()) }
+    var text by rememberSaveable(value) { mutableStateOf(value.toString()) }
     val parsed = text.toIntOrNull()
     val invalid = parsed == null || parsed !in validRange
     Column {
@@ -855,7 +353,7 @@ private fun NumberInputSetting(
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = text,
-                onValueChange = { input -> text = input.filter { ch -> ch.isDigit() }.take(6) },
+                onValueChange = { input -> text = if (strictInput) input else input.filter { ch -> ch.isDigit() }.take(6) },
                 singleLine = true,
                 isError = invalid && text.isNotEmpty(),
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
@@ -880,7 +378,7 @@ private fun NumberInputSetting(
 }
 
 @Composable
-private fun StepperSetting(
+internal fun StepperSetting(
     label: String,
     value: Int,
     onCommit: (Int) -> Unit,
@@ -918,11 +416,11 @@ private fun appVersionLabel(): String {
     }
 }
 
-private fun QuietHoursPolicyFormat(minutes: Int): String =
+internal fun QuietHoursPolicyFormat(minutes: Int): String =
     com.example.bilimonitor.domain.policy.QuietHoursPolicy.format(minutes)
 
 /** 解析 HH:mm / H:mm；非法返回 null。 */
-private fun parseTimeOfDay(text: String): Int? {
+internal fun parseTimeOfDay(text: String): Int? {
     val parts = text.trim().split(":")
     if (parts.size != 2) return null
     val h = parts[0].toIntOrNull() ?: return null
@@ -932,7 +430,7 @@ private fun parseTimeOfDay(text: String): Int? {
 }
 
 @Composable
-private fun TimeOfDayInput(
+internal fun TimeOfDayInput(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,

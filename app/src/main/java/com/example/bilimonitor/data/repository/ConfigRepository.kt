@@ -12,6 +12,7 @@ import com.example.bilimonitor.data.local.entity.AuditLogEntity
 import com.example.bilimonitor.data.local.entity.MonitoringConfigRevisionEntity
 import com.example.bilimonitor.data.local.db.AppDatabase
 import com.example.bilimonitor.domain.model.MonitoringConfigSnapshot
+import com.example.bilimonitor.domain.policy.NameRefreshPolicy
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -43,6 +44,8 @@ data class ConfigUpdate(
     val startConfirmationCount: Int? = null,
     val endConfirmationCount: Int? = null,
     val placeholderText: String? = null,
+    val nameRefreshHours: Int? = null,
+    val nameRetryMinutes: Int? = null,
     /** 触发重试/熔断的最小失败占比（%，默认 50，范围 1–100）。 */
     val retryFailureRatioPercent: Int? = null,
     /** 「封禁中」主播的复查间隔（秒，默认 1800，范围 60–86400）。 */
@@ -64,6 +67,12 @@ class ConfigRepository @Inject constructor(
     private val quietHoursRepository: QuietHoursRepository
 ) {
     fun getConfigFlow() = configDao.observeConfig()
+
+    suspend fun startupChoice(): BackgroundKeepAliveChoice = db.withTransaction {
+        val choice = checkNotNull(configDao.getConfig()).backgroundKeepAliveChoice
+        check(choice != BackgroundKeepAliveChoice.UNSET || !configDao.hasSavedKeepAliveChoice())
+        choice
+    }
 
     /** 便捷开关：供通知栏「停止监控」等非界面路径使用（走同一条 CAS 更新，带审计）。 */
     suspend fun setMonitoringEnabled(enabled: Boolean): ConfigUpdateResult =
@@ -97,6 +106,8 @@ class ConfigRepository @Inject constructor(
             startConfirmationCount = config.startConfirmationCount,
             endConfirmationCount = config.endConfirmationCount,
             placeholderText = config.placeholderText,
+            nameRefreshHours = config.nameRefreshHours,
+            nameRetryMinutes = config.nameRetryMinutes,
             // v9 两个新配置：默认值刻意与实体默认值/DDL DEFAULT 保持一致
             // （任一处不同步，老库升级后读到的生效值就会与设置页显示的值不一致）。
             retryFailureRatioPercent = config.retryFailureRatioPercent,
@@ -168,6 +179,8 @@ class ConfigRepository @Inject constructor(
                         startConfirmationCount = merged.startConfirmationCount,
                         endConfirmationCount = merged.endConfirmationCount,
                         placeholderText = merged.placeholderText,
+                        nameRefreshHours = merged.nameRefreshHours,
+                        nameRetryMinutes = merged.nameRetryMinutes,
                         retryFailureRatioPercent = merged.retryFailureRatioPercent,
                         banRecheckIntervalSeconds = merged.banRecheckIntervalSeconds,
                         circuitBreakerEnabled = merged.circuitBreakerEnabled,
@@ -200,6 +213,8 @@ class ConfigRepository @Inject constructor(
                     startConfirmationCount = merged.startConfirmationCount,
                     endConfirmationCount = merged.endConfirmationCount,
                     placeholderText = merged.placeholderText,
+                    nameRefreshHours = merged.nameRefreshHours,
+                    nameRetryMinutes = merged.nameRetryMinutes,
                     retryFailureRatioPercent = merged.retryFailureRatioPercent,
                     banRecheckIntervalSeconds = merged.banRecheckIntervalSeconds,
                     circuitBreakerEnabled = merged.circuitBreakerEnabled,
@@ -262,6 +277,8 @@ class ConfigRepository @Inject constructor(
                                 startConfirmationCount = config.startConfirmationCount,
                                 endConfirmationCount = config.endConfirmationCount,
                                 placeholderText = config.placeholderText,
+                                nameRefreshHours = config.nameRefreshHours,
+                                nameRetryMinutes = config.nameRetryMinutes,
                                 retryFailureRatioPercent = config.retryFailureRatioPercent,
                                 banRecheckIntervalSeconds = config.banRecheckIntervalSeconds,
                                 circuitBreakerEnabled = config.circuitBreakerEnabled,
@@ -294,6 +311,8 @@ class ConfigRepository @Inject constructor(
                             startConfirmationCount = config.startConfirmationCount,
                             endConfirmationCount = config.endConfirmationCount,
                             placeholderText = config.placeholderText,
+                            nameRefreshHours = config.nameRefreshHours,
+                            nameRetryMinutes = config.nameRetryMinutes,
                             retryFailureRatioPercent = config.retryFailureRatioPercent,
                             banRecheckIntervalSeconds = config.banRecheckIntervalSeconds,
                             circuitBreakerEnabled = config.circuitBreakerEnabled,
@@ -347,6 +366,9 @@ class ConfigRepository @Inject constructor(
         // 只改一处会出现"界面能填、保存却报参数非法"（或反过来"界面拦住、库里其实存得下"）的割裂。
         // 注意这里校验的是**合并后**的值：老库里已存的 <30 的值会让本次以及后续任何更新都被这一行拒掉，
         // 用户必须先把间隔改成 ≥30 才能再改其它设置；按项目原则不做静默改写。
+        val refreshHours = update.nameRefreshHours ?: config.nameRefreshHours
+        val retryMinutes = update.nameRetryMinutes ?: config.nameRetryMinutes
+        if (refreshHours !in NameRefreshPolicy.hours || retryMinutes !in NameRefreshPolicy.minutes) return null
         if (interval < 30 || interval > 3600) return null
         if (batch < 1 || batch > 100) return null
         if (concurrency < 1 || concurrency > 16) return null
@@ -396,6 +418,8 @@ class ConfigRepository @Inject constructor(
             freshnessStaleSeconds = freshnessStale,
             startConfirmationCount = startCount,
             endConfirmationCount = endCount,
+            nameRefreshHours = refreshHours,
+            nameRetryMinutes = retryMinutes,
             placeholderText = update.placeholderText ?: config.placeholderText,
             retryFailureRatioPercent = retryRatio,
             banRecheckIntervalSeconds = banRecheck

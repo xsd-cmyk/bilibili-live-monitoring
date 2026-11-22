@@ -4,7 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -12,7 +12,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -52,11 +52,11 @@ fun NotificationDeliverySettingsCard(viewModel: NotificationDeliverySettingsView
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val saved = settings ?: return
-    var live by remember(saved) { mutableStateOf(saved.liveMinutes.toString()) }
-    var end by remember(saved) { mutableStateOf(saved.endMinutes.toString()) }
-    var change by remember(saved) { mutableStateOf(saved.changeMinutes.toString()) }
+    var live by rememberSaveable(saved) { mutableStateOf(saved.liveMinutes.toString()) }
+    var end by rememberSaveable(saved) { mutableStateOf(saved.endMinutes.toString()) }
+    var change by rememberSaveable(saved) { mutableStateOf(saved.changeMinutes.toString()) }
     fun valid(text: String) = text.toIntOrNull()?.let { it in 1..1440 } == true
-    Card(Modifier.fillMaxWidth()) {
+    AppCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("通知有效期", style = MaterialTheme.typography.titleMedium)
             Text("从确认变化时开始计时。超过有效期不再弹出提醒，历史记录仍保留。",

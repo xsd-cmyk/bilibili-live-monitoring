@@ -134,7 +134,7 @@ class HistoryRepository @Inject constructor(
             )
             if (rows == 0) return@withTransaction CorrectionResult.Conflict
             // 标题修正：更新首标题并记入标题变更表
-            val newTitle = correction.title?.takeIf { it.isNotBlank() }
+            val newTitle = actual.title?.takeIf { it.isNotBlank() }
             if (newTitle != null && newTitle != session.titleAtStart) {
                 liveSessionDao.updateTitleAtStart(session.id, newTitle, now)
                 liveSessionTitleDao.insert(
@@ -143,7 +143,7 @@ class HistoryRepository @Inject constructor(
             }
             // 分区修正（可留空 = 不改）：填了就**替换**该场次的分区记录 ——
             // 自动记录可能把换分区记成好几条，人工填的是"我认为这一场属于哪个分区"这一件事。
-            val newArea = correction.area?.takeIf { it.isNotBlank() }
+            val newArea = actual.area?.takeIf { it.isNotBlank() }
             if (newArea != null) {
                 db.liveSessionAreaDao().deleteForSession(session.stableId)
                 db.liveSessionAreaDao().insert(

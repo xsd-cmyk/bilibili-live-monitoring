@@ -1,5 +1,7 @@
 package com.example.bilimonitor.ui.settings
 
+import com.example.bilimonitor.ui.common.AppAlertDialog
+import com.example.bilimonitor.ui.common.AppCardSurface
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import androidx.compose.foundation.BorderStroke
@@ -26,8 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -298,7 +299,7 @@ fun IconPresetScreen(
 
     // 确认框：只在真正要切走的时候弹（点到当前那一格时 ViewModel 返回 null，连框都不会出现）。
     pendingSwitch?.let { target ->
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { pendingSwitch = null },
             title = { Text("切换到「${target.label}」？") },
             text = {
@@ -384,7 +385,7 @@ private fun rememberAppIconPainter(): Painter? {
  */
 @Composable
 private fun CopyrightNoticeCard() {
-    Surface(
+    AppCardSurface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -421,7 +422,7 @@ private fun AxisSectionCard(
     description: String,
     extraNote: String? = null
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    AppCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Text(
                 title,
@@ -461,7 +462,7 @@ private fun AxisSectionCard(
  */
 @Composable
 private fun EmptyIconAxisCard() {
-    Card(Modifier.fillMaxWidth()) {
+    AppCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Text(
                 "还没有可选的预设图标",
@@ -487,7 +488,7 @@ private fun EmptyIconAxisCard() {
  */
 @Composable
 private fun EmptyNameAxisCard() {
-    Card(Modifier.fillMaxWidth()) {
+    AppCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Text(
                 "还没有可选的预设名字",
@@ -562,11 +563,11 @@ private fun IconAxisCell(
 
     if (isCurrent) {
         // 不带 onClick 的 Surface 重载 = 真正的不可点（不是"点了没反应"的假禁用）。
-        Surface(modifier = base, shape = shape, color = color, border = border) {
+        AppCardSurface(modifier = base, shape = shape, color = color, border = border) {
             IconAxisCellContent(option, painter, isCurrent)
         }
     } else {
-        Surface(
+        AppCardSurface(
             modifier = base.clickable(
                 onClickLabel = "切换到这个图标",
                 role = Role.Button,
@@ -665,11 +666,11 @@ private fun NameAxisRow(option: NameAxisOption, isCurrent: Boolean, onClick: () 
         }
 
     if (isCurrent) {
-        Surface(modifier = base, shape = shape, color = color, border = border) {
+        AppCardSurface(modifier = base, shape = shape, color = color, border = border) {
             NameAxisRowContent(option, isCurrent)
         }
     } else {
-        Surface(
+        AppCardSurface(
             modifier = base.clickable(
                 onClickLabel = "切换到这个名字",
                 role = Role.Button,
@@ -736,7 +737,7 @@ private fun NameAxisRowContent(option: NameAxisOption, isCurrent: Boolean) {
  */
 @Composable
 private fun SwitchNoteCard() {
-    Card(Modifier.fillMaxWidth()) {
+    AppCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Text(
                 "图标与名字是两个独立的轴",

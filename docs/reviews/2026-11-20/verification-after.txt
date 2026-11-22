@@ -1,0 +1,49 @@
+2026-11-20 · 工作树修复后验收摘录（只留聚合计数、合成样本与断言名）
+
+执行：Windows / OpenJDK 17.0.19 / Gradle 8.11.1 / compileSdk 35；计数顺序为 tests/failures/errors/skipped。
+Gradle 全量构建及两变体测试：BUILD SUCCESSFUL in 2m 59s
+Debug JVM: 43 suites, 376/0/0/0
+Debug Lint: fatal=0 error=0 warning=205 information=3
+Release JVM: 43 suites, 376/0/0/0
+Release Lint: fatal=0 error=0 warning=164 information=3
+
+API 35 / BiliMonitor_Test / emulator-5592 / connectedDebugAndroidTest: 60/0/0/0
+API 31 / BiliAudit31Checked / emulator-5596 / AndroidJUnitRunner: OK (60 tests), start=60 pass=60 fail=0 error=0 skip=0
+
+API 35 修复专项（均包含在 60 项内，API 31 同套件）：
+PASS auditAdoptedIdentityRemapsExistingHistoryAndOutbox
+PASS auditAvailableSchemaMatrix
+PASS auditCancelledRestoreStaysCancelled
+PASS auditClosureThresholdsWithAndWithoutGaps
+PASS auditEngineCannotAdoptGenerationChangedDuringFetch
+PASS auditExportSeparatesManualDurationFromCoverage
+PASS auditFreshObservationAfterWallRollback
+PASS auditFreshSessionReferencesInterval
+PASS auditGapEndsAtLastKnownLiveWithTwoConfirmations
+PASS auditLogoutWinsBeforeImportAndTerminalCannotReplay
+PASS auditManualDurationIsNotMonitoredCoverage
+PASS auditNotePreservesAreaTimeline
+PASS auditPausedGenerationRejectsOldResponse
+PASS auditRealConfirmationUsesElapsedUntilReboot
+PASS auditRecoveredSessionOwnsEvent
+PASS auditReliableSecondsIntersectAndUnifyRealIntervals
+PASS auditRestoreHasExactlyOneWinner
+PASS auditSkipDoesNotChangeAnotherUidPolicy
+PASS auditStatsSelectsThisStreamersLatestDay
+PASS auditUndecidedRestoreDoesNotCommit
+PASS deletedBetweenBatchesIsSkippedWithoutRequest
+
+Debug v12 → v13 → v14：
+14
+audit-closure|21|5|1|9||
+partial_indices=16 foreign_key_errors=0
+v14 → v12 / v13（adb install -r，无 -d）：两次均 INSTALL_FAILED_VERSION_DOWNGRADE。
+
+Release v12 → v14（未卸载，临时同签名）：
+user_version / 主播(stableId,sequence,generation,lock,两项时钟为空) / 场次(stableId,duration,revision,note) / 部分索引数 / 外键错误数：
+14
+release-closure|27|6|1|1|1
+release-session|30|3|验收备注
+16
+0
+v14 → v12（adb install -r，无 -d）：INSTALL_FAILED_VERSION_DOWNGRADE，保留 versionCode=8 / versionName=1120.1。

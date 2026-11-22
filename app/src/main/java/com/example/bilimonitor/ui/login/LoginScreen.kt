@@ -1,5 +1,6 @@
 package com.example.bilimonitor.ui.login
 
+import com.example.bilimonitor.ui.common.AppAlertDialog
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -19,9 +20,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -55,6 +55,7 @@ import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
 import com.example.bilimonitor.data.repository.AccountState
 import com.example.bilimonitor.data.repository.AuthRepository
+import com.example.bilimonitor.data.repository.FollowImportResult
 import com.example.bilimonitor.data.repository.FollowImportRepository
 import com.example.bilimonitor.data.repository.HISTORY_PS_MAX
 import com.example.bilimonitor.data.repository.IMPORT_MAX_COUNT
@@ -445,7 +446,14 @@ class LoginViewModel @Inject constructor(
                 _state.value = _state.value.copy(error = "导入失败：${it.message}")
                 return@launch
             }
-            val (added, existed, restored) = result
+            val (added, existed, restored) = when (result) {
+                is FollowImportResult.Applied -> result
+                FollowImportResult.AccountChanged -> {
+                    _state.value = _state.value.copy(importStage = "IDLE", importPreview = emptyList(), selectedUids = emptySet(),
+                        previewTaskId = null, importWarning = null, importResult = null, error = "登录状态已变化，已取消导入，未写入所选主播")
+                    return@launch
+                }
+            }
             // ★ "这次不是完整结果"的提示不能在应用之后消失（复查发现的缺陷）：
             //   原先预览阶段看得到、一点"导入所选"就被清成 null，主卡片只剩"导入完成" ——
             //   用户要 2000 条却因分页上限/风控只拿到一部分时，最终看到的仍是成功。
@@ -539,7 +547,7 @@ fun LoginScreen(onBack: () -> Unit, viewModel: LoginViewModel = hiltViewModel())
             Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Card {
+            AppCard {
                 Column(Modifier.padding(14.dp)) {
                     Text("登录仅用于「关注导入」；核心监控不需要登录。", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(6.dp))
@@ -610,7 +618,7 @@ fun LoginScreen(onBack: () -> Unit, viewModel: LoginViewModel = hiltViewModel())
 
             if (state.account.loggedIn) {
                 // 导入来源 + 数量设置
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("导入设置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
@@ -725,7 +733,7 @@ fun LoginScreen(onBack: () -> Unit, viewModel: LoginViewModel = hiltViewModel())
                     " → 显示二维码=${qrBitmap != null && state.qrState !is QrLoginState.Confirmed}"
             )
             if (qrBitmap != null && state.qrState !is QrLoginState.Confirmed) {
-                Card {
+                AppCard {
                     Column(
                         Modifier.fillMaxWidth().padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -797,7 +805,7 @@ fun LoginScreen(onBack: () -> Unit, viewModel: LoginViewModel = hiltViewModel())
                 showCookieDialog = false
             }
         }
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { showCookieDialog = false },
             title = { Text("用 Cookie 登录") },
             text = {
@@ -879,7 +887,7 @@ fun LoginScreen(onBack: () -> Unit, viewModel: LoginViewModel = hiltViewModel())
             }
             // 轮询期间：显示**任务真实状态**（而不是无信息的转圈），可取消
             state.importStage == null || state.importStage!!.startsWith("TASK:") -> {
-                AlertDialog(
+                AppAlertDialog(
                     onDismissRequest = { showImportPreview = false },
                     title = { Text("正在获取列表") },
                     text = {
@@ -918,7 +926,7 @@ fun LoginScreen(onBack: () -> Unit, viewModel: LoginViewModel = hiltViewModel())
             }
             // 失败 / 超时：给出结果并提供重试入口
             else -> {
-                AlertDialog(
+                AppAlertDialog(
                     onDismissRequest = { showImportPreview = false },
                     title = { Text("导入未完成") },
                     text = { Text(state.error ?: "没有获取到可导入的主播") },
@@ -951,7 +959,7 @@ private fun ImportPreviewDialog(
     val filtered = if (state.previewQuery.isBlank()) state.importPreview
     else state.importPreview.filter { it.name.contains(state.previewQuery.trim()) }
 
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("选择要导入的主播（${state.selectedUids.size}/${state.importPreview.size}）") },
         text = {

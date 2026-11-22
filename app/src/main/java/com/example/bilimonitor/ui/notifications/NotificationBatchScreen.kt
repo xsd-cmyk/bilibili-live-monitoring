@@ -1,5 +1,6 @@
 package com.example.bilimonitor.ui.notifications
 
+import com.example.bilimonitor.ui.common.GlassInfoPanel
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -10,7 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -83,8 +84,12 @@ fun NotificationBatchScreen(
         if (current == null) {
             Column(Modifier.fillMaxSize().padding(padding).padding(20.dp)) {
                 if (message != null) {
-                    Text(message.orEmpty())
-                    TextButton(onClick = onOpenHistory) { Text("打开通知历史") }
+                    GlassInfoPanel {
+                        Column {
+                            Text(message.orEmpty())
+                            TextButton(onClick = onOpenHistory) { Text("打开通知历史") }
+                        }
+                    }
                 } else CircularProgressIndicator()
             }
         } else {
@@ -95,7 +100,7 @@ fun NotificationBatchScreen(
             ) {
                 item { Text("共 ${current.members.size} 位主播", style = MaterialTheme.typography.bodySmall) }
                 items(current.members, key = { it.eventKey }) { member ->
-                    Card(onClick = { onOpenMember(member, current.isEnd) }, modifier = Modifier.fillMaxWidth()) {
+                    AppCard(onClick = { onOpenMember(member, current.isEnd) }, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text(member.name, style = MaterialTheme.typography.titleMedium)
                             Text(

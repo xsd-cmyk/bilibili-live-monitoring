@@ -69,6 +69,7 @@ class AppearanceViewModel @Inject constructor(
         val cardAlpha: Float = com.example.bilimonitor.data.repository.AppearanceSettingsRepository.DEFAULT_CARD_ALPHA,
         /** 液态玻璃是否也应用到卡片（用户要求：与 Dock 同步） */
         val glassCards: Boolean = false,
+        val liquidCards: Boolean = false,
         val glassBlur: Float = com.example.bilimonitor.data.repository.AppearanceSettingsRepository.DEFAULT_GLASS_BLUR,
         val glassTint: Float = com.example.bilimonitor.data.repository.AppearanceSettingsRepository.DEFAULT_GLASS_TINT,
         val glassHighlight: Float = com.example.bilimonitor.data.repository.AppearanceSettingsRepository.DEFAULT_GLASS_HIGHLIGHT,
@@ -99,12 +100,21 @@ class AppearanceViewModel @Inject constructor(
                 cardDim = current.cardDim,
                 cardAlpha = current.cardAlpha,
                 glassCards = current.glassCards,
+                liquidCards = current.liquidCards,
                 glassBlur = current.glassBlur,
                 glassTint = current.glassTint,
                 glassHighlight = current.glassHighlight,
                 glassRimAlpha = current.glassRimAlpha,
                 glassRimWidth = current.glassRimWidth
             )
+        }
+    }
+
+    fun setLiquidCards(enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { appearanceRepository.setLiquidCards(enabled) }
+                .onSuccess { _state.value = _state.value.copy(liquidCards = enabled) }
+                .onFailure { _state.value = _state.value.copy(message = "设置失败：${it.message}") }
         }
     }
 
@@ -485,6 +495,7 @@ class AppearanceViewModel @Inject constructor(
                         cardDim = fresh.cardDim,
                         cardAlpha = fresh.cardAlpha,
                         glassCards = fresh.glassCards,
+                        liquidCards = fresh.liquidCards,
                         glassBlur = fresh.glassBlur,
                         glassTint = fresh.glassTint,
                         glassHighlight = fresh.glassHighlight,

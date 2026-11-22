@@ -149,6 +149,8 @@ data class MonitoringConfigSnapshot(
     val startConfirmationCount: Int,
     val endConfirmationCount: Int,
     val placeholderText: String,
+    val nameRefreshHours: Int = 24,
+    val nameRetryMinutes: Int = 1,
     /**
      * 触发重试/熔断的**最小失败占比**（%，默认 50，范围 1–100）。
      * 语义见 [com.example.bilimonitor.domain.policy.RoundFailureRatio]：

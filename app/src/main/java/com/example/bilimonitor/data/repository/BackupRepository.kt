@@ -81,7 +81,15 @@ data class BackupBody(
      * 新增字段用默认值，配合 precheck 的"原始 body 校验和"策略，
      * 旧备份（没有这个键）依然能通过校验（详见 [BackupChecksum.ofRawBody]）。
      */
-    val areas: List<BackupArea> = emptyList()
+    val areas: List<BackupArea> = emptyList(),
+    val roomBans: List<BackupRoomBan> = emptyList()
+)
+
+@Serializable
+data class BackupRoomBan(
+    val streamerStableId: String, val sessionStableId: String?, val detectedAt: Long,
+    val liftedAt: Long?, val lockTill: Long?, val roomId: Long?,
+    val activeAtBackup: Boolean = false, val lastConfirmedBanAt: Long? = null
 )
 
 @Serializable
@@ -206,6 +214,8 @@ data class BackupMonitoringSettings(
     val startConfirmationCount: Int,
     val endConfirmationCount: Int,
     val placeholderText: String,
+    val nameRefreshHours: Int = 24,
+    val nameRetryMinutes: Int = 1,
     /**
      * v9 新增两项。
      *
@@ -364,6 +374,7 @@ class BackupRepository @Inject constructor(
         val titleRows = db.liveSessionTitleDao().listAll()
 
         val sidById = streamers.associate { it.id to it.stableId }
+        val bansById = streamers.associate { it.id to com.example.bilimonitor.domain.policy.RoomBanCodec.decode(it.lastError) }
         val tagIdByStable = tags.associate { it.stableId to it.id }
         val groupIdByStable = groups.associate { it.stableId to it.id }
         val sessionIdByStable = sessions.associate { it.id to it.stableId }
@@ -417,6 +428,12 @@ class BackupRepository @Inject constructor(
             },
             areas = db.liveSessionAreaDao().listAll().map {
                 BackupArea(it.sessionStableId, it.areaLabel, it.parentAreaName, it.areaName, it.observedAt)
+            },
+            roomBans = db.roomBanHistoryDao().listAll().mapNotNull { ban ->
+                val stableId = sidById[ban.streamerId] ?: return@mapNotNull null
+                val marker = bansById[ban.streamerId]?.takeIf { it.lockedAtWall == ban.detectedAt }
+                BackupRoomBan(stableId, ban.sessionStableId, ban.detectedAt, ban.liftedAt, ban.lockTill,
+                    ban.roomId, marker != null, marker?.lastProbeAtWall)
             }
         )
 
@@ -447,7 +464,7 @@ class BackupRepository @Inject constructor(
                 "tags" to body.tags.size.toLong(),
                 "groups" to body.groups.size.toLong(),
                 "policies" to body.policies.size.toLong(),
-                "areas" to body.areas.size.toLong()
+                "areas" to body.areas.size.toLong(), "roomBans" to body.roomBans.size.toLong()
             ),
             checksum = BackupChecksum.sha256(bodyJson),
             settingsChecksum = settingsChecksum,
@@ -488,6 +505,8 @@ class BackupRepository @Inject constructor(
                     startConfirmationCount = c.startConfirmationCount,
                     endConfirmationCount = c.endConfirmationCount,
                     placeholderText = c.placeholderText,
+                    nameRefreshHours = c.nameRefreshHours,
+                    nameRetryMinutes = c.nameRetryMinutes,
                     retryFailureRatioPercent = c.retryFailureRatioPercent,
                     banRecheckIntervalSeconds = c.banRecheckIntervalSeconds,
                     circuitBreakerEnabled = c.circuitBreakerEnabled
@@ -659,7 +678,7 @@ class BackupRepository @Inject constructor(
             "tags" to file.body.tags.size.toLong(),
             "groups" to file.body.groups.size.toLong(),
             "policies" to file.body.policies.size.toLong(),
-            "areas" to file.body.areas.size.toLong()
+            "areas" to file.body.areas.size.toLong(), "roomBans" to file.body.roomBans.size.toLong()
         )
         // 只比对清单里**确实存在**的键：旧备份没有 "areas" 这一项，
         // 若把缺失当成不一致，所有旧备份都会被误判为"记录数与清单不一致"。
@@ -705,14 +724,16 @@ class BackupRepository @Inject constructor(
                 (local == null || local.uid == backupStreamerByStable[s.streamerStableId]?.uid)
         }
 
-        restoreDao.insertRun(
-            RestoreRunEntity(
-                restoreRunId = runId, backupId = manifest.backupId, startedAt = now,
-                status = if (conflicts.isEmpty()) RestoreRunStatus.PRECHECK else RestoreRunStatus.WAITING_DECISIONS,
-                finishedAt = null, finishReason = null, warningCount = 0
+        db.withTransaction {
+            restoreDao.insertRun(
+                RestoreRunEntity(
+                    restoreRunId = runId, backupId = manifest.backupId, startedAt = now,
+                    status = if (conflicts.isEmpty()) RestoreRunStatus.PRECHECK else RestoreRunStatus.WAITING_DECISIONS,
+                    finishedAt = null, finishReason = null, warningCount = 0
+                )
             )
-        )
-        if (conflicts.isNotEmpty()) restoreDao.insertConflicts(conflicts)
+            if (conflicts.isNotEmpty()) restoreDao.insertConflicts(conflicts)
+        }
         return PrecheckResult.Ready(runId, manifest, conflicts, newStreamers, sessionsToRestore)
     }
 
@@ -732,12 +753,8 @@ class BackupRepository @Inject constructor(
      */
     suspend fun applyRestore(runId: String, content: String): RestoreSummary {
         val now = clock.nowWall()
-        val run = restoreDao.getRun(runId) ?: return RestoreSummary(runId, emptyMap(), emptyMap(), emptyMap(), listOf("恢复运行不存在"))
-        // 终态不可逆（0.6.33.1）：已 COMPLETED/FAILED/CANCELLED 的运行不得再次执行
-        val advanced = restoreDao.casTransition(runId, run.status, RestoreRunStatus.APPLYING, null, null, run.warningCount)
-        if (advanced == 0) {
-            return RestoreSummary(runId, emptyMap(), emptyMap(), emptyMap(), listOf("该恢复已执行或已取消，不能重复执行"))
-        }
+        val run = checkNotNull(restoreDao.getRun(runId)) { "恢复运行不存在" }
+        check(restoreDao.beginDecidedRun(runId) == 1) { "仍有未决冲突，或该恢复已执行/已取消" }
         // 维护权（0.6.26）：恢复期间必须冻结监控引擎的写入。
         // 进入 APPLYING 之后、解析与写库之前获取。
         //
@@ -759,20 +776,13 @@ class BackupRepository @Inject constructor(
                 "无法进入维护模式，请稍后再试"
             }
             unknownSessionEnums = 0
-        val file = withContext(Dispatchers.Default) { parseBackupFile(content) } ?: run {
-            restoreDao.casTransition(runId, RestoreRunStatus.APPLYING, RestoreRunStatus.FAILED, now, RestoreFinishReason.FAILED, 0)
-            return RestoreSummary(runId, emptyMap(), emptyMap(), emptyMap(), listOf("文件解析失败"))
-        }
-        // 应用设置段要在事务之前取出来：事务内那条 APPLY_RESTORE 审计要把 settings 的恢复量
-        // （以及本步产生的警告）一起写进 detailJson，而那一步早于"7) 应用设置"。
+        val file = checkNotNull(withContext(Dispatchers.Default) { parseBackupFile(content) }) { "文件解析失败" }
+        check(file.manifest.backupId == run.backupId) { "所选文件与预检不一致，请重新预检" }
         val settings = file.settings
         val warnings = mutableListOf<String>()
         /** 事务里那条 APPLY_RESTORE 审计覆盖到的警告条数（见它的写入处）。 */
         var warningsAtAudit = 0
         val conflicts = restoreDao.listConflicts(runId)
-        val undecided = conflicts.count { it.decision == null }
-        if (undecided > 0) warnings.add("存在 $undecided 条未决策冲突，按跳过处理")
-
         var addedStreamers = 0L; var updatedStreamers = 0L; var skippedStreamers = 0L
         var restoredSessions = 0L; var skippedSessions = 0L
         // 同一主播的"重复未结束场次"必须单独计数：它既不是"已存在"也不是"不在范围内"，
@@ -781,6 +791,7 @@ class BackupRepository @Inject constructor(
         var duplicateOpenSessions = 0L
         // 场次枚举列（来源/置信度）降级次数：攒成一条聚合警告，不逐条刷屏。
         var restoredEvents = 0L
+        var restoredRoomBans = 0L
         var restoredCorrections = 0L
         // 标签必须分开计"新建"与"本地已有"（缺陷修复）：原来一个 restoredTags 把两者混在一起，
         // 用户分不出"标签建出来了"和"本来就有"；分组此前**完全没统计**。
@@ -803,9 +814,8 @@ class BackupRepository @Inject constructor(
         var skippedGroupRefs = 0L
 
         // 冲突决策映射：backupStableId -> action（未决策按 SKIP）
-        val decisionByStable = conflicts.associate {
-            it.backupStableId!! to (it.decision ?: RestoreConflictAction.SKIP)
-        }
+        val conflictByStable = conflicts.associateBy { it.backupStableId }
+
 
         db.withTransaction {
             val streamerDao = db.streamerDao()
@@ -813,11 +823,25 @@ class BackupRepository @Inject constructor(
             val localByUid = streamerDao.listAllIncludingDeleted().associateBy { it.uid }
 
             // 1) 主播
-            val ownedStableIds = mutableSetOf<String>()
+            val lock = db.runtimeLockDao().get()
+            check(lock?.maintenanceMode == MaintenanceMode.RESTORE && lock.fencingToken == maintenance.owner &&
+                restoreDao.getRun(runId)?.status == RestoreRunStatus.APPLYING) { "恢复任务已失去执行权" }
+            val admitted = mutableMapOf<String, Long>()
             for (bs in file.body.streamers) {
-                val action = decisionByStable[bs.stableId] ?: RestoreConflictAction.USE_BACKUP
+                val conflict = conflictByStable[bs.stableId]
                 val byStable = localByStable[bs.stableId]
                 val byUid = localByUid[bs.uid]
+                if (conflict?.decision == RestoreConflictAction.SKIP || conflict?.decision == RestoreConflictAction.KEEP_LOCAL) {
+                    skippedStreamers++
+                    continue
+                }
+                val collision = byStable?.takeIf { it.uid != bs.uid } ?: byUid?.takeIf { it.stableId != bs.stableId }
+                if (collision != null || conflict != null) {
+                    check(collision != null && conflict != null && collision.stableId == conflict.localStableId && collision.uid == conflict.localUid &&
+                        bs.uid == conflict.backupUid && (byStable == null || byUid == null || byStable.id == byUid.id)) {
+                        "主播身份自预检后已变化，请重新预检"
+                    }
+                }
                 when {
                     byStable != null && byStable.uid == bs.uid -> {
                         // 同一实体：以备份为权威，写回删除态与开关（监控开关 / 收藏）。
@@ -854,40 +878,21 @@ class BackupRepository @Inject constructor(
                         if (bs.isFavorite != byStable.isFavorite) {
                             streamerDao.setFavorite(byStable.id, bs.isFavorite, now)
                         }
-                        ownedStableIds += bs.stableId
+                        admitted[bs.stableId] = byStable.id
                         updatedStreamers++
                     }
-                    byStable != null && byStable.uid != bs.uid -> {
-                        when (action) {
-                            RestoreConflictAction.USE_BACKUP, RestoreConflictAction.MERGE -> {
-                                streamerDao.updateIdentity(byStable.id, bs.uid, now)
-                                ownedStableIds += bs.stableId
-                                updatedStreamers++
-                            }
-                            RestoreConflictAction.KEEP_LOCAL -> {
-                                ownedStableIds += bs.stableId
-                                skippedStreamers++
-                            }
-                            RestoreConflictAction.SKIP -> skippedStreamers++
-                        }
+                    byStable != null -> {
+                        streamerDao.updateIdentity(byStable.id, bs.uid, now)
+                        admitted[bs.stableId] = byStable.id
+                        updatedStreamers++
                     }
-                    byStable == null && byUid != null -> {
-                        when (action) {
-                            RestoreConflictAction.USE_BACKUP, RestoreConflictAction.MERGE -> {
-                                // 采纳备份 stableId 为最终身份（0.6.40）
-                                streamerDao.updateStableId(byUid.id, bs.stableId, now)
-                                ownedStableIds += bs.stableId
-                                updatedStreamers++
-                            }
-                            RestoreConflictAction.KEEP_LOCAL -> {
-                                ownedStableIds += byUid.stableId
-                                skippedStreamers++
-                            }
-                            RestoreConflictAction.SKIP -> skippedStreamers++
-                        }
+                    byUid != null -> {
+                        remapStreamerIdentity(byUid, bs.stableId, now)
+                        admitted[bs.stableId] = byUid.id
+                        updatedStreamers++
                     }
                     else -> {
-                        streamerDao.insert(
+                        admitted[bs.stableId] = streamerDao.insert(
                             StreamerEntity(
                                 stableId = bs.stableId, uid = bs.uid, roomId = bs.roomId,
                                 shortRoomId = bs.shortRoomId, name = bs.name, nameLocked = bs.nameLocked,
@@ -915,15 +920,16 @@ class BackupRepository @Inject constructor(
                                 createdAt = bs.createdAt, updatedAt = now
                             )
                         )
-                        ownedStableIds += bs.stableId
                         addedStreamers++
                     }
                 }
             }
 
             // 2) 场次（按 sessionKey 幂等；父主播必须在本备份范围内）
-            val localSessionStableIds = db.liveSessionDao().listAll().map { it.stableId }.toSet()
-            val sidToInt = streamerDao.listAllIncludingDeleted().associateBy { it.stableId }
+            val localSessionOwners = db.liveSessionDao().listAll().associate { it.stableId to it.streamerId }
+            val rowsById = streamerDao.listAllIncludingDeleted().associateBy { it.id }
+            val sidToInt = admitted.mapValues { (_, id) -> rowsById.getValue(id) }
+            val allowedSessions = mutableMapOf<String, Long>()
             // ★ 同一主播的未结束场次只允许一条（缺陷修复）：库上有两个唯一部分索引
             //   （AppMigrations 的 idx_live_session_one_active_open / one_abandoned_open），
             //   备份里若同一主播有 ≥2 条 endTime 为空的场次，原先第二条会直接撞索引 ——
@@ -943,7 +949,14 @@ class BackupRepository @Inject constructor(
                 }
             }
             for (bs in file.body.sessions) {
-                val reason = restoreSessionReason(bs, localSessionStableIds, ownedStableIds, sidToInt)
+                val owner = admitted[bs.streamerStableId]
+                val existing = localSessionOwners[bs.stableId]
+                if (existing != null && owner == existing) allowedSessions[bs.stableId] = existing
+                val reason = when {
+                    owner == null -> "场次 ${bs.stableId.takeLast(8)} 的主播未获准恢复，已跳过"
+                    existing != null -> ""
+                    else -> null
+                }
                 if (reason != null) {
                     skippedSessions++
                     if (reason.isNotEmpty()) warnings.add(reason)
@@ -957,6 +970,7 @@ class BackupRepository @Inject constructor(
                         skippedSessions++
                     } else {
                         insertBackupSession(bs, streamer.id, lifecycleState)
+                        allowedSessions[bs.stableId] = streamer.id
                         restoredSessions++
                     }
                 } else {
@@ -965,6 +979,7 @@ class BackupRepository @Inject constructor(
                         bs, streamer.id,
                         com.example.bilimonitor.data.local.entity.LiveSessionLifecycleState.ACTIVE
                     )
+                    allowedSessions[bs.stableId] = streamer.id
                     restoredSessions++
                 }
             }
@@ -982,14 +997,29 @@ class BackupRepository @Inject constructor(
                 )
             }
 
+            for (ban in file.body.roomBans) {
+                val owner = sidToInt[ban.streamerStableId] ?: continue
+                if (ban.detectedAt < 0 || ban.liftedAt?.let { it < ban.detectedAt } == true) continue
+                val session = ban.sessionStableId?.takeIf { (allowedSessions[it] ?: localSessionOwners[it] ?: owner.id) == owner.id }
+                val row = com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity(
+                    com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity.key(owner.stableId, ban.detectedAt), owner.id, session,
+                    ban.detectedAt, ban.liftedAt, ban.lockTill, ban.roomId)
+                if (db.roomBanHistoryDao().insert(row) != -1L) restoredRoomBans++
+            }
+            if (file.body.roomBans.any { it.activeAtBackup }) warnings.add("封禁记录按历史导入，当前是否封禁以重新检查为准")
+
             // 3) 事件（按 eventId 幂等）
             for (be in file.body.events) {
                 val streamer = if (db.liveEventDao().findById(be.eventId) != null) null else sidToInt[be.streamerStableId]
-                if (streamer != null) runCatching {
+                if (streamer == null || (be.sessionStableId != null && allowedSessions[be.sessionStableId] != streamer.id)) {
+                    skippedEvents++
+                    continue
+                }
+                runCatching {
                     db.liveEventDao().insert(
                         com.example.bilimonitor.data.local.entity.LiveEventEntity(
                             eventId = be.eventId, streamerId = streamer.id,
-                            streamerStableId = be.streamerStableId, sessionStableId = be.sessionStableId,
+                            streamerStableId = streamer.stableId, sessionStableId = be.sessionStableId,
                             // 用 EnumSafe 而不是裸 valueOf（第二轮审查发现）：
                             // 一份来自更新版本、含本版本不认识的枚举名的备份，
                             // 原先会让整个恢复事务抛异常 —— 现在退化成"该字段取保守值 + 记一条日志"，
@@ -1018,8 +1048,7 @@ class BackupRepository @Inject constructor(
 
             // 3.5) 场次标题（按 PK 幂等；父场次须在本次恢复范围内）
             for (bt in file.body.titles) {
-                val sessionExists = db.liveSessionDao().findByStableId(bt.sessionStableId) != null
-                if (!sessionExists) continue
+                if (bt.sessionStableId !in allowedSessions) { skippedTitles++; continue }
                 runCatching {
                     db.liveSessionTitleDao().insert(
                         com.example.bilimonitor.data.local.entity.LiveSessionTitleEntity(
@@ -1034,8 +1063,7 @@ class BackupRepository @Inject constructor(
 
             // 3.6) 场次分区（按 PK 幂等；父场次须在本次恢复范围内）
             for (ba in file.body.areas) {
-                val sessionExists = db.liveSessionDao().findByStableId(ba.sessionStableId) != null
-                if (!sessionExists) continue
+                if (ba.sessionStableId !in allowedSessions) { skippedAreas++; continue }
                 runCatching {
                     db.liveSessionAreaDao().insert(
                         com.example.bilimonitor.data.local.entity.LiveSessionAreaEntity(
@@ -1057,6 +1085,7 @@ class BackupRepository @Inject constructor(
             //   并把该场次的整表拉回来再 any{}" —— 修正多时是 O(n²) 次查询 + 反复物化。
             val correctionIds = db.liveSessionCorrectionDao().listAll().map { it.correctionId }.toSet()
             for (bc in file.body.corrections) {
+                if (bc.sessionStableId !in allowedSessions) continue
                 val already = bc.correctionId in correctionIds
                 if (!already) runCatching {
                     db.liveSessionCorrectionDao().insert(
@@ -1137,15 +1166,6 @@ class BackupRepository @Inject constructor(
             if (skippedGroupRefs > 0) {
                 warnings.add("有 $skippedGroupRefs 条分组归属未恢复：备份里的分组或主播在本地找不到对应记录")
             }
-            if (policiesMissingChangeKeys > 0) {
-                // 如实说明"哪些字段没有被备份覆盖"，否则用户会以为恢复出来的就是备份里的全部设置
-                warnings.add(
-                    "有 $policiesMissingChangeKeys 位主播的「标题/分区变化通知」开关在备份里没有记录" +
-                        "（旧版备份）：这些主播**保留本地当前设置**，未被改动"
-                )
-            }
-
-            // 6) 主播策略
             for (p in file.body.policies) {
                 val streamer = sidToInt[p.streamerStableId] ?: continue
                 // ★ 缺键 ≠ 用户关掉了它（2026 复查）：这两个开关是后来才加的，旧备份里没有这两个键，
@@ -1172,6 +1192,15 @@ class BackupRepository @Inject constructor(
                 )
             }
 
+            if (policiesMissingChangeKeys > 0) {
+                // 如实说明"哪些字段没有被备份覆盖"，否则用户会以为恢复出来的就是备份里的全部设置
+                warnings.add(
+                    "有 $policiesMissingChangeKeys 位主播的「标题/分区变化通知」开关在备份里没有记录" +
+                        "（旧版备份）：这些主播**保留本地当前设置**，未被改动"
+                )
+            }
+
+            // 6) 主播策略
             db.streamerDao().bumpSourceDataVersion(now)
             logDao.insertAudit(
                 AuditLogEntity(
@@ -1227,6 +1256,8 @@ class BackupRepository @Inject constructor(
                         startConfirmationCount = m.startConfirmationCount,
                         endConfirmationCount = m.endConfirmationCount,
                         placeholderText = m.placeholderText,
+                        nameRefreshHours = m.nameRefreshHours,
+                        nameRetryMinutes = m.nameRetryMinutes,
                         // v9 两项随备份恢复（旧备份用默认值，见 BackupMonitoringSettings 的说明）。
                         retryFailureRatioPercent = m.retryFailureRatioPercent,
                         banRecheckIntervalSeconds = m.banRecheckIntervalSeconds,
@@ -1291,20 +1322,16 @@ class BackupRepository @Inject constructor(
             }
         }
 
-        // ★ 完成态 CAS 必须检查返回值（台账 H19-B6）：cancelRun() 可能已经把这一行改成
-        //   CANCELLED/FAILED，此时若还返回"恢复完成"，UI 与 restore_run 会互相矛盾。
         val completed = restoreDao.casTransition(
-            runId, RestoreRunStatus.APPLYING, RestoreRunStatus.COMPLETED, now,
+            runId, RestoreRunStatus.APPLYING, RestoreRunStatus.COMPLETED, clock.nowWall(),
             RestoreFinishReason.COMPLETED, warnings.size
         )
-        if (completed == 0) {
-            warnings.add("数据已写入，但恢复运行记录已被并发取消/失败，状态未标记为完成（以冲突决策页与数据为准）")
-        }
+        check(completed == 1) { "恢复任务失去执行权，不能报告完成" }
         return RestoreSummary(
             restoreRunId = runId,
             restoredCounts = mapOf(
                 "streamers" to addedStreamers, "sessions" to restoredSessions,
-                "events" to restoredEvents, "corrections" to restoredCorrections,
+                "events" to restoredEvents, "corrections" to restoredCorrections, "roomBans" to restoredRoomBans,
                 // 标签分"新建 / 本地已有"两项：合成一个数字时分不出"标签建出来了"和"本来就有"。
                 "tagsNew" to newTags, "tagsExisting" to existingTags,
                 // 分组原先完全没统计（恢复完分组却不进摘要，用户只能靠肉眼确认）。
@@ -1319,6 +1346,7 @@ class BackupRepository @Inject constructor(
             skippedCounts = mapOf(
                 "streamers" to skippedStreamers, "sessions" to skippedSessions,
                 "events" to skippedEvents, "titles" to skippedTitles, "areas" to skippedAreas,
+                "roomBans" to file.body.roomBans.size.toLong() - restoredRoomBans,
                 "tagRefs" to skippedTagRefs, "groupRefs" to skippedGroupRefs
             ),
             conflictCounts = conflicts.groupBy { it.type.name }.mapValues { it.value.size.toLong() },
@@ -1374,25 +1402,32 @@ class BackupRepository @Inject constructor(
         }
     }
 
-    /** 返回 null = 可恢复；空串 = 静默跳过（已存在）；非空 = 跳过原因。 */
-    private fun restoreSessionReason(
-        bs: BackupSession, localStableIds: Set<String>,
-        ownedStableIds: Set<String>, sidToInt: Map<String, com.example.bilimonitor.data.local.entity.StreamerEntity>
-    ): String? {
-        if (bs.stableId in localStableIds) return ""
-        if (bs.streamerStableId !in ownedStableIds)
-            return "场次 ${bs.stableId.takeLast(8)} 的主播不在备份范围内，已跳过"
-        if (sidToInt[bs.streamerStableId] == null) return ""
-        return null
+    private suspend fun remapStreamerIdentity(local: StreamerEntity, finalId: String, now: Long) {
+        check(db.streamerDao().updateStableId(local.id, finalId, now) == 1)
+        val sql = db.openHelper.writableDatabase
+        val args = arrayOf<Any>(finalId, local.stableId)
+        for (table in listOf("live_event", "status_history", "reliable_monitor_interval", "monitoring_gap_streamer", "notification_history", "monitoring_error_log")) {
+            sql.execSQL("UPDATE $table SET streamerStableId = ? WHERE streamerStableId = ?", args)
+        }
+        val oldKey = kotlinx.serialization.json.JsonPrimitive(local.stableId)
+        fun remap(node: kotlinx.serialization.json.JsonElement): kotlinx.serialization.json.JsonElement = when (node) {
+            is kotlinx.serialization.json.JsonObject -> kotlinx.serialization.json.JsonObject(node.mapValues { (key, value) ->
+                if (key == "streamerStableId" && value == oldKey) kotlinx.serialization.json.JsonPrimitive(finalId) else remap(value)
+            })
+            is kotlinx.serialization.json.JsonArray -> kotlinx.serialization.json.JsonArray(node.map(::remap))
+            else -> node
+        }
+        val updates = mutableListOf<Pair<String, String>>()
+        sql.query("SELECT outboxId, payloadJson FROM notification_outbox WHERE instr(payloadJson, ?) > 0", arrayOf(oldKey.toString())).use { cursor ->
+            while (cursor.moveToNext()) {
+                val original = json.parseToJsonElement(cursor.getString(1))
+                val changed = remap(original)
+                if (original != changed) updates += cursor.getString(0) to changed.toString()
+            }
+        }
+        for ((id, payload) in updates) sql.execSQL("UPDATE notification_outbox SET payloadJson = ? WHERE outboxId = ?", arrayOf(payload, id))
     }
 
-    /**
-     * 插入一条备份场次（未结束场次的"是否重复"判断留在调用方，因为跳过原因要分别计数）。
-     *
-     * 抽出来的另一个原因：未结束场次与已结束场次只差 `lifecycleState` 一个字段，
-     * 原先这段构造在两种分支里各写一遍（其中未结束那条还漏了唯一索引的约束），
-     * 抽成一处后"未结束"这条路径只有一种写法，不会再漏。
-     */
     private suspend fun insertBackupSession(
         bs: BackupSession, streamerId: Long,
         lifecycleState: com.example.bilimonitor.data.local.entity.LiveSessionLifecycleState
@@ -1478,8 +1513,7 @@ class BackupRepository @Inject constructor(
     }
 
     suspend fun cancelRun(runId: String) {
-        val run = restoreDao.getRun(runId) ?: return
-        restoreDao.casTransition(runId, run.status, RestoreRunStatus.CANCELLED, clock.nowWall(), RestoreFinishReason.CANCELLED, run.warningCount)
+        restoreDao.cancelPendingRun(runId, clock.nowWall())
     }
 
     suspend fun listConflicts(runId: String): List<RestoreConflictEntity> = restoreDao.listConflicts(runId)

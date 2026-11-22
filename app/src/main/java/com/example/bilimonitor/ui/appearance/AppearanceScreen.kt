@@ -23,13 +23,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -152,7 +153,7 @@ fun AppearanceScreen(
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("应用名称", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
@@ -183,7 +184,7 @@ fun AppearanceScreen(
                     }
                 }
 
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("应用图标", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(8.dp))
@@ -247,7 +248,7 @@ fun AppearanceScreen(
                 // 「放到桌面」紧跟「应用名称 / 应用图标」：这三张卡讲的是同一件事 ——
                 // 先起名、再选图标，最后把它固定到桌面。原来它排在页面靠后（在底部导航之后），
                 // 用户改完名称与图标还得往下翻才能找到"放到桌面"，流程被割断。
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("放到桌面", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
@@ -269,7 +270,7 @@ fun AppearanceScreen(
                     }
                 }
 
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("主题色", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
@@ -352,7 +353,7 @@ fun AppearanceScreen(
                     }
                 }
 
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("背景图片", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
@@ -511,7 +512,7 @@ fun AppearanceScreen(
                     }
                 }
 
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("卡片外观", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
@@ -529,7 +530,7 @@ fun AppearanceScreen(
                         // 与其让用户拖了没反应，不如直接禁用并说明原因。
                         // 判据里**不能**带上 glassDock：Dock 玻璃不改变卡片底色，
                         // 把它算进来只会让"只开 Dock"时这个滑块被无故禁用。
-                        val glassActive = state.glassCards
+                        val glassActive = state.glassCards || state.liquidCards
                         Text("透明度：${(state.cardAlpha * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
                         Slider(
                             value = state.cardAlpha,
@@ -558,12 +559,12 @@ fun AppearanceScreen(
 
                 // 「底部导航样式」紧跟「卡片外观」：两者都是"界面长什么样"的直接设置，
                 // 而「夜间模式」是明暗主题、属于另一类，放中间会把这两张同类的卡片隔开。
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("底部导航样式", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Dock 栏是悬浮的圆角栏（默认），普通样式是贴底的整条导航栏。",
+                            "轻点 Dock 切页，或按下直接左右拖动，无需长按。栏内松手切换，栏外松手取消。普通样式贴底显示。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -600,7 +601,7 @@ fun AppearanceScreen(
                 //   「底部导航样式」卡里 —— 两个开关分处两张卡，用户既看不出它们的关系，
                 //   也没法预期"只开其中一个"是什么效果。并列之后，玻璃相关的开关与参数
                 //   集中在同一处，语义上也不再依附于导航样式。
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("液态玻璃", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
@@ -608,8 +609,7 @@ fun AppearanceScreen(
                         // 开关之间的联动逻辑不在本页（见 AppearanceSettingsRepository.setGlassDock），
                         // 界面若写上"互不影响"，一旦联动还在就是又一句过度承诺。
                         Text(
-                            "这 5 项参数由 Dock 与卡片共用：模糊半径与玻璃浓度同时作用于两者，" +
-                                "高光与亮边只画在 Dock 上（卡片没有自己的高光与亮边）。",
+                            "Dock 和液态玻璃卡片共用以下五项参数。喜欢清透效果时，把模糊半径设为 0 即可。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -620,8 +620,7 @@ fun AppearanceScreen(
                             Column(Modifier.weight(1f)) {
                                 Text("液态玻璃效果")
                                 Text(
-                                    "Dock 栏做成毛玻璃：按栏体位置把背景图对应区域模糊后透出，带高光与亮边；" +
-                                        "未设置背景图时只有半透明质感、没有可折射的内容。",
+                                    "透出栏下滚动的内容和壁纸，图标与文字保持清晰。Android 13 及以上带边缘折射，Android 12 使用磨砂和边缘高光。",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -641,10 +640,11 @@ fun AppearanceScreen(
                         // 不再承诺"整体磨砂"，也不再提"Dock 玻璃关掉会一并关闭"（该联动正在被移除）。
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("同时应用到所有卡片")
+                                Text("半透明卡片与壁纸磨砂")
                             }
                             Switch(
                                 checked = state.glassCards,
+                                enabled = !state.liquidCards,
                                 onCheckedChange = { viewModel.setGlassCards(it) }
                             )
                         }
@@ -656,10 +656,17 @@ fun AppearanceScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        // ★ 两个开关**任一**开着就显示参数（这里原来是 if (state.glassDock)）：
-                        //   参数是两者共用的，只开卡片玻璃时同样得能调；否则用户打开卡片玻璃后
-                        //   找不到任何参数入口，只能一直用默认值（用户反馈：单独开一个时参数调不了）。
-                        if (state.glassDock || state.glassCards) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(Modifier.fillMaxWidth().toggleable(value = state.liquidCards, role = Role.Switch,
+                            onValueChange = viewModel::setLiquidCards), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("所有卡片使用 Dock 液态玻璃")
+                                Text("卡片透出背景，并使用与 Dock 相同的高光、亮边和折射。无需开启玻璃 Dock；关闭后恢复原卡片外观。",
+                                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = state.liquidCards, onCheckedChange = null)
+                        }
+                        if (state.glassDock || state.glassCards || state.liquidCards) {
                             Spacer(Modifier.height(4.dp))
                             // 液态玻璃参数（用户要求：参数可自定义）。
                             // 抽成同一组参数给 Dock 与卡片共用，改一处两边一起变 ——
@@ -698,7 +705,7 @@ fun AppearanceScreen(
                     }
                 }
 
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("夜间模式", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
@@ -750,7 +757,7 @@ fun AppearanceScreen(
                     }
                 }
 
-                Card {
+                AppCard {
                     Column(Modifier.padding(14.dp)) {
                         Text("恢复默认外观", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))

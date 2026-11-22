@@ -5,6 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.WindowInsets
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,7 +38,7 @@ import com.example.bilimonitor.ui.settings.SettingsScreen
 import com.example.bilimonitor.ui.theme.BiliMonitorTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
+import com.example.bilimonitor.ui.onboarding.StartupConfigGate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -52,8 +55,30 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var clock: com.example.bilimonitor.core.AppClock
     @Inject lateinit var notificationLogDao: com.example.bilimonitor.data.local.dao.LogDao
 
+    private var backEdge = 0
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val decor = window.decorView
+                val insets = decor.rootWindowInsets?.getInsets(WindowInsets.Type.systemGestures())
+                backEdge = when {
+                    event.x < (insets?.left ?: 0) -> 1
+                    event.x >= decor.width - (insets?.right ?: 0) -> -1
+                    else -> 0
+                }
+            }
+            MotionEvent.ACTION_UP -> backEdge = 0
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) backEdge = 0
+        return super.onKeyDown(keyCode, event)
+    }
+
     private var pendingUrl: String? by mutableStateOf(null)
-    private var startDestination: String? by mutableStateOf(null)
 
     /**
      * 通知点击带入的深链目标（原规范 20/236）。
@@ -143,22 +168,8 @@ class MainActivity : ComponentActivity() {
         }
         resolvePendingNotification()
 
-        lifecycleScope.launch {
-            // 配置读取失败时**必须仍给出一个起始页**。
-            // 原实现依赖 startDestination 非空才 setContent，一旦建库/种子失败
-            // （磁盘满、迁移异常等）startDestination 恒为 null → setContent 永不调用 →
-            // 用户看到无法自愈的永久白屏，连错误都没有。
-            // 这里 config 为 null（含抛异常）时退回引导页，保证界面一定能出来；
-            // 引导页的"确认选择"会走 completeOnboarding，从而在库可用时自愈。
-            val config = runCatching { configRepository.getConfigFlow().first() }.getOrNull()
-            val dest =
-                if (config == null || config.backgroundKeepAliveChoice == com.example.bilimonitor.data.local.BackgroundKeepAliveChoice.UNSET) {
-                    Routes.ONBOARDING
-                } else {
-                    Routes.HOME
-                }
-            startDestination = dest
-            setContent {
+        setContent {
+            StartupConfigGate(configRepository) { dest ->
                 // 外观自定义（用户要求）：主题色 + 背景图（含明暗/透明度）。
                 // 在 setContent 这一层读取，是因为主题与背景必须包住整个 NavHost —— 
                 // 放到任何单个页面里都只能影响那一页。
@@ -219,40 +230,25 @@ class MainActivity : ComponentActivity() {
                     customPrimary = appearance.themeColor,
                     transparentSurface = backgroundBitmap != null,
                     cardDim = appearance.cardDim,
-                    cardAlpha = if (appearance.glassCards) (1f - appearance.glassTint).coerceAtLeast(0.35f) else appearance.cardAlpha
+                    cardAlpha = if (appearance.glassCards && !appearance.liquidCards) (1f - appearance.glassTint).coerceAtLeast(0.35f) else appearance.cardAlpha
                 ) {
-                    com.example.bilimonitor.ui.theme.AppBackground(
-                        bitmap = backgroundBitmap,
-                        dim = appearance.backgroundDim,
-                        alpha = appearance.backgroundAlpha,
-                        // 显示区域（用户框选）在这里真正落地：只有这块区域会被铺满窗口，
-                        // 与编辑器的取景框是同一比例、同一区域（依据见 BackgroundRegionMath）。
-                        crop = appearance.backgroundCrop,
-                        // 卡片玻璃：把壁纸本身模糊掉，半透明卡片透出的就是磨砂壁纸。
-                        // ★ 模糊半径就是「模糊半径」参数：用户把它拉到 0，这里就是 0f ——
-                        //   那一刻**壁纸并不磨砂**，卡片只剩半透明底色（在复杂背景上看起来
-                        //   就是一层淡白色块）。这是刻意保留的行为（尊重用户把模糊设为 0 的
-                        //   显式意图，不去替他"纠正"），因此文案只能写"磨砂程度由模糊参数决定"，
-                        //   不能写成"开启卡片玻璃就把壁纸整体磨砂"。
-                        // 判据只有 glassCards：Dock 玻璃不参与卡片与壁纸的渲染。
-                        frostBlur = if (appearance.glassCards) appearance.glassBlur else 0f
-                    ) {
-                        BiliMonitorApp(
-                            startDestination = dest,
-                            pendingDeepLink = pendingTarget,
-                            onDeepLinkConsumed = {
-                                // 两个都要清：pendingTarget 是"待消费的目标"，
-                                // pendingEventKey 是"待解析的原始 key" —— 只清前者，
-                                // 它会在下一次重建时被重新解析并再导航一遍。
-                                pendingTarget = null
-                                pendingEventKey = null
-                                pendingClickHint = null
-                                resolvingKey = null
-                            },
-                            onRequestNotificationPermission = { requestNotificationPermission() },
-                            appearanceSettings = appearanceRepository
-                        )
-                    }
+                    BiliMonitorApp(
+                        startDestination = dest,
+                        pendingDeepLink = pendingTarget,
+                        onDeepLinkConsumed = {
+                            // 两个都要清：pendingTarget 是"待消费的目标"，
+                            // pendingEventKey 是"待解析的原始 key" —— 只清前者，
+                            // 它会在下一次重建时被重新解析并再导航一遍。
+                            pendingTarget = null
+                            pendingEventKey = null
+                            pendingClickHint = null
+                            resolvingKey = null
+                        },
+                        onRequestNotificationPermission = { requestNotificationPermission() },
+                        appearance = appearance,
+                        backgroundBitmap = backgroundBitmap,
+                        backEdge = { backEdge }
+                    )
                 }
             }
         }

@@ -1,5 +1,6 @@
 ﻿package com.example.bilimonitor.ui.stats
 
+import com.example.bilimonitor.ui.common.AppAlertDialog
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,8 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -140,7 +140,7 @@ class StreamerStatsViewModel @Inject constructor(
             _state.value = _state.value.copy(
                 loading = true, granularity = g, usingCustom = false, error = null
             )
-            val values = runCatching { seriesRepository.allBucketValues(g) }.getOrDefault(emptyList())
+            val values = runCatching { seriesRepository.allBucketValues(streamerId, g) }.getOrDefault(emptyList())
             val latest = runCatching { seriesRepository.currentBucketValue(g) }.getOrNull()
             val value = values.firstOrNull() ?: latest
             _state.value = _state.value.copy(bucketValues = values, bucketValue = value)
@@ -345,7 +345,7 @@ fun StreamerStatsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 item {
-                    Card {
+                    AppCard {
                         Column(Modifier.padding(14.dp)) {
                             Text(
                                 if (state.usingCustom) "自定义区间" else periodTitle(state.granularity, state.bucketValue),
@@ -369,7 +369,7 @@ fun StreamerStatsScreen(
                     }
                 }
                 item {
-                    Card {
+                    AppCard {
                         Column(Modifier.padding(14.dp)) {
                             Text("直播时长分布", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(8.dp))
@@ -399,7 +399,7 @@ fun StreamerStatsScreen(
                 // 改成 items(...) 逐行懒加载。
                 val detailPoints = result?.points.orEmpty().filter { it.sessionCount > 0 }
                 item {
-                    Card {
+                    AppCard {
                         Column(Modifier.padding(14.dp)) {
                             Text("该时段场次明细", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                             if (detailPoints.isEmpty()) {
@@ -410,7 +410,7 @@ fun StreamerStatsScreen(
                     }
                 }
                 items(detailPoints) { p ->
-                    Card {
+                    AppCard {
                         Text(
                             "${p.label}：${p.sessionCount} 场 · ${formatDuration(p.seconds)}",
                             Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
@@ -491,7 +491,7 @@ private fun CustomRangeDialog(
     val startParts = remember { com.example.bilimonitor.ui.common.DateParts().apply { setEpochDate(initialStart) } }
     val endParts = remember { com.example.bilimonitor.ui.common.DateParts().apply { setEpochDate(initialEnd) } }
     var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("自定义时间范围") },
         text = {

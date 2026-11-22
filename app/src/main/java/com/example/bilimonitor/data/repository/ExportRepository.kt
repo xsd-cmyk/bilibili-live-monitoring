@@ -98,6 +98,7 @@ class ExportRepository @Inject constructor(
             // 用"用户主动接管"版本：否则监控租约有效期内（每 Tick 后 90 秒）导出必然失败，
             // 而报错信息会说是"导出/恢复/清理正在进行"——与真实原因完全无关。
             var sessionCount = 0
+            var roomBans = emptyList<com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity>()
             val maintenance = RuntimeLockRepository.MaintenanceLease(MaintenanceMode.BACKUP)
             try {
                 // ★ 取维护权必须放在 try **里面**（复查发现的缺陷）：它是 suspend 的 Room 写，
@@ -124,6 +125,7 @@ class ExportRepository @Inject constructor(
                     val sessions = db.liveSessionDao()
                         .listClosedForStreamersBetween(streamerIds, from, to)
                     sessionCount = sessions.size
+                    roomBans = db.roomBanHistoryDao().listForExport(streamerIds, from, to)
                     val names = namesById
                     // 分区：一场直播可能换过多个，导出时按观察顺序拼成 "A → B"
                     val areasBySession = db.liveSessionAreaDao().listAll()
@@ -146,7 +148,8 @@ class ExportRepository @Inject constructor(
                             // 没有分区记录的老场次回退到 session 上的起止分区
                             "areas" to (areasBySession[s.stableId]
                                 ?: listOfNotNull(s.areaAtStart, s.areaAtEnd).distinct().joinToString(" → ")),
-                            "note" to s.note
+                            "note" to s.note,
+                            "endReason" to s.endReason
                         )
                         exportDao.insertSessionRow(
                             ExportSnapshotLiveSessionEntity(
@@ -208,8 +211,8 @@ class ExportRepository @Inject constructor(
                 // 进行中的场次不在取数结果里（查询带 endTime IS NOT NULL）：先数一次，
                 // 才能把"确实没有记录"与"只有一场还没结束"分开说，而不是一律断言"没有直播记录"。
                 val inProgressCount = countInProgress(streamerIds, from, to)
-                check(decoded.isNotEmpty()) {
-                    "所选主播在该范围内暂无已结束的直播记录${inProgressHint(inProgressCount)}，未生成文件"
+                check(decoded.isNotEmpty() || roomBans.isNotEmpty()) {
+                    "所选主播在该范围内暂无已结束的直播记录或封禁记录${inProgressHint(inProgressCount)}，未生成文件"
                 }
                 if (unparsableRows > 0) {
                     logExportFailure(
@@ -217,15 +220,18 @@ class ExportRepository @Inject constructor(
                     )
                 }
 
-                val withRecordIds = decoded.mapNotNull { it["streamerId"]?.toLongOrNull() }.toSet()
+                val withRecordIds = decoded.mapNotNull { it["streamerId"]?.toLongOrNull() }.toSet() + roomBans.map { it.streamerId }
                 val emptyStreamerCount = streamerIds.count { it !in withRecordIds }
-                val requestedName = buildFileNameFromRows(decoded, selectedNames, ExportNaming.Kind.HISTORY)
+                val requestedName = if (roomBans.isEmpty()) buildFileNameFromRows(decoded, selectedNames, ExportNaming.Kind.HISTORY)
+                else buildFileName(decoded.mapNotNull { it["startTime"]?.toLongOrNull() } + roomBans.map { it.detectedAt },
+                    selectedNames, ExportNaming.Kind.HISTORY)
                 // ★ HTML 拼装 + 写盘放到 IO/Default（台账 H19-2.1/C4/D1）：
                 //   记录数没有上限（用户可选"全部"），几千行时字符串拼装与 MediaStore 写入
                 //   都是实打实的主线程阻塞 —— 封面保存路径已经因为同类问题真崩过一次。
                 val html = withContext(Dispatchers.Default) {
                     buildHtml(
                         rows = decoded,
+                        banRows = roomBans,
                         rangeLabel = rangeLabel,
                         streamerIds = streamerIds,
                         selectedNames = selectedNames,
@@ -646,6 +652,7 @@ $labels
      */
     private fun buildHtml(
         rows: List<Map<String, String?>>,
+        banRows: List<com.example.bilimonitor.data.local.entity.RoomBanHistoryEntity>,
         rangeLabel: String,
         streamerIds: List<Long>,
         selectedNames: List<String>,
@@ -668,6 +675,7 @@ $labels
 
         // 行按**主播 id** 分组（理由见方法注释）；组内按开播时间倒序（最近的在前）
         val rowsByStreamer = rows.groupBy { it["streamerId"] ?: "" }
+        val bansByStreamer = banRows.groupBy { it.streamerId }
 
         val subject = if (selectedNames.size == 1) esc(selectedNames.first())
         else "${selectedNames.size} 位主播（${selectedNames.take(20).joinToString("、") { esc(it) }}${if (selectedNames.size > 20) " 等" else ""}）"
@@ -682,7 +690,7 @@ $labels
             val note = r["note"]?.takeIf { it.isNotBlank() }
             return """<tr><td>${esc(r["titleAtStart"])}</td>
                <td>${esc(r["areas"]?.takeIf { it.isNotBlank() } ?: "—")}</td>
-               <td>${time(r["startTime"])} → ${time(r["endTime"])}</td>
+               <td>${time(r["startTime"])} → ${time(r["endTime"])}${if (r["endReason"] == "ROOM_BANNED") "<br>因封禁结束" else ""}</td>
                <td>${duration(r["durationSeconds"])}</td>
                <td style="color:$confColor">${esc(conf)}</td>
                ${if (note != null) "<td>${esc(note)}</td>" else "<td>—</td>"}</tr>"""
@@ -697,7 +705,7 @@ $labels
             val title = esc(sectionTitles.getOrNull(index) ?: selectedNames.getOrNull(index) ?: "未知主播")
             val heading = """<h2 class="streamer">$title
                 <span class="meta">$meta</span></h2>"""
-            if (own.isEmpty()) {
+            val sessionSection = if (own.isEmpty()) {
                 // 取数查询带 `endTime IS NOT NULL`：能走到这里的只有"没有**已结束**的场次"，
                 // 原话"没有直播记录"会把"进行中"也算成"没播过"。
                 "$heading\n<p class=\"empty\">该范围内暂无已结束的直播记录</p>"
@@ -706,6 +714,12 @@ $labels
 <table><tr><th>标题</th><th>分区</th><th>时间</th><th>时长</th><th>可信度</th><th>备注</th></tr>
 ${own.joinToString("\n") { sessionRow(it) }}</table>"""
             }
+            val bans = bansByStreamer[streamerId].orEmpty()
+            val banSection = "<h3>本范围内封禁 ${bans.size} 次</h3>" + if (bans.isEmpty()) "" else
+                "<table><tr><th>确认封禁</th><th>确认解封</th></tr>" + bans.joinToString("") {
+                    "<tr><td>${time(it.detectedAt.toString())}</td><td>${it.liftedAt?.let { at -> time(at.toString()) } ?: "未记录"}</td></tr>"
+                } + "</table>"
+            sessionSection + banSection
         }
 
         // 丢行与进行中场次都是"必须让用户看见"的事实，但都不该打断导出：
@@ -730,7 +744,7 @@ p.empty{margin:8px 0 24px;color:#999;font-size:13px}
 .summary{background:#f7f7f7;padding:12px;border-radius:8px;margin:16px 0}</style></head>
 <body><h1>直播历史导出</h1>
 <div class="summary">导出对象：$subject<br>
-选择的时间范围：${esc(rangeLabel)}　|　主播：${selectedNames.size} 位（其中 $emptyStreamerCount 位无记录）　|　场次：$total　|　总时长：${duration(totalSeconds.toString())}${inProgressNote}<br>
+选择的时间范围：${esc(rangeLabel)}　|　主播：${selectedNames.size} 位（其中 $emptyStreamerCount 位无记录）　|　场次：$total　|　封禁：${banRows.size} 次　|　总时长：${duration(totalSeconds.toString())}${inProgressNote}<br>
 ${unparsableNote}生成时间：$generated<br>
 数据可信度说明：<span style="color:#E8A03C">PROVISIONAL</span>=自动记录（暂定），<span style="color:#2E7D32">CORRECTED</span>=人工修正，CONFIRMED=已确认。</div>
 $sections

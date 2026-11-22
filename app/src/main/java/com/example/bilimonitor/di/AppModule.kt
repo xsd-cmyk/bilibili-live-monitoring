@@ -172,6 +172,7 @@ object AppModule {
     // ---- DAOs ----
 
     @Provides fun streamerDao(db: AppDatabase) = db.streamerDao()
+    @Provides fun roomBanHistoryDao(db: AppDatabase) = db.roomBanHistoryDao()
     @Provides fun liveSessionDao(db: AppDatabase) = db.liveSessionDao()
     @Provides fun liveSessionTitleDao(db: AppDatabase) = db.liveSessionTitleDao()
     @Provides fun liveSessionAreaDao(db: AppDatabase) = db.liveSessionAreaDao()

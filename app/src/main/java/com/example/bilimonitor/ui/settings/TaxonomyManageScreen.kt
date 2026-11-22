@@ -1,5 +1,7 @@
 ﻿package com.example.bilimonitor.ui.settings
 
+import com.example.bilimonitor.ui.common.AppAlertDialog
+import com.example.bilimonitor.ui.common.AppCardSurface
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,14 +19,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
+import com.example.bilimonitor.ui.common.AppCard
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -313,7 +313,7 @@ private fun TaxonomySectionCard(
     onMove: (Int, Int) -> Unit,
     onDelete: (Int, TaxonomyItem) -> Unit
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    AppCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
@@ -371,7 +371,7 @@ private fun TaxonomyRow(
     onMoveDown: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Surface(
+    AppCardSurface(
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -444,7 +444,7 @@ private fun DeleteConfirmDialog(
         count = runCatching { viewModel.streamerCount(pending) }.getOrNull()
     }
     val actual = count
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("删除$kind「${pending.name}」？") },
         text = {
